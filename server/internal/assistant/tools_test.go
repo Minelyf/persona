@@ -510,6 +510,61 @@ func TestSessionsChangedRetractsToldOutboxBeforeDigest(t *testing.T) {
 	}
 }
 
+// Startup recovery reaches the same outbox restoration before any session list arrives. A told receipt from the old
+// process must therefore be reconciled by restoration itself, not only by SessionsChanged (#5732).
+func TestRecoverTaskStartsRetractsToldOutboxBeforeDigest(t *testing.T) {
+	s, f := newQuietServiceOn(t, &memStore{})
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	presenceTimes(t, 0, 0)
+	ownerTurnTimes(t, 0, 0)
+	ctx := context.Background()
+	todo, err := s.createTodo(ctx, "Retract the outbox during startup recovery", "", "conv1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.superviseTodo(ctx, todo.ID, "conv1", nil, 0)
+	g := superviseSignal{Todo: todo.ID, Kind: sigUnjudged, Key: "start-unknown@" + todo.ID, Detail: "stale unknown start", At: time.Now()}
+	markLeaderTurnSignalled(t, s, g)
+	s.signal(g)
+	if got := storedSupervisePending(t, s)[g.id()]; got.Key != g.Key {
+		t.Fatalf("the outbox fixture was not persisted: %+v", got)
+	}
+	if !s.turnsTold(ctx, []superviseSignal{g}) {
+		t.Fatal("the crash-boundary fixture did not persist told")
+	}
+	simulateSupervisionRestart(t, s)
+	s.tasks.turns.mu.Lock()
+	s.tasks.turns.loaded, s.tasks.turns.doc = false, taskTurnsDoc{}
+	s.tasks.turns.mu.Unlock()
+	s.todos.mu.Lock()
+	s.todos.loaded = false
+	s.todos.mu.Unlock()
+
+	// Service.Run calls this before superviseLoop and before the first SessionsChanged.
+	if err := s.recoverTaskStarts(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	s.supervise.mu.Lock()
+	pending := s.supervise.pending[g.id()]
+	s.supervise.mu.Unlock()
+	if pending.Key == g.Key {
+		t.Errorf("startup restored the already-told signal into memory: %+v", pending)
+	}
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(ctx)
+	if got := storedSupervisePending(t, s)[g.id()]; got.Key == g.Key {
+		t.Error("startup recovery left the confirmed outbox entry deliverable")
+	}
+	if text := strings.Join(f.noticesTo("conv1"), "\n"); strings.Contains(text, "stale unknown start") {
+		t.Fatalf("startup recovery delivered the confirmed start-unknown: %s", text)
+	}
+	for _, msg := range queuedRelays(s, "conv1") {
+		if strings.Contains(msg.Text, "stale unknown start") {
+			t.Fatalf("startup recovery queued the confirmed start-unknown: %+v", msg)
+		}
+	}
+}
+
 // turnsFailureStore injects a task-ledger failure only after the fixture has been persisted.
 type turnsFailureStore struct {
 	Store

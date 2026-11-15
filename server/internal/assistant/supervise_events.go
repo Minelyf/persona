@@ -333,6 +333,15 @@ func (s *Service) notifyTaskNeedsUser(ctx context.Context, t Todo, work time.Tim
 // and a parked task is parked no longer (someone sent its agent something: it is supervised as before, parked.go).
 func (s *Service) supervisedWorking(ctx context.Context, t Todo) {
 	s.autoReviewWorking(ctx, t)
+	// The previous stop is moot even when no review state or owner wait remains to take the update path below. Forget
+	// its durable-only form before a later restore; a stop raised by the new work has another key and is unaffected.
+	b := &s.supervise
+	b.mu.Lock()
+	delete(b.pending, t.ID+"|"+sigReview)
+	delete(b.pending, t.ID+"|"+sigIdle)
+	delete(b.pending, t.ID+"|"+sigParkedDue)
+	s.forgetSupervisePending(t.ID+"|"+sigReview, t.ID+"|"+sigIdle, t.ID+"|"+sigParkedDue)
+	b.mu.Unlock()
 	if st := t.Supervision.state(t); st != reviewPending && st != reviewParked && (t.Supervision == nil || t.Supervision.Waits == nil) {
 		return
 	}
@@ -354,12 +363,6 @@ func (s *Service) supervisedWorking(ctx context.Context, t Todo) {
 	}); err != nil {
 		s.logf("task %s: supervision: %v", t.ID, err)
 	}
-	b := &s.supervise
-	b.mu.Lock()
-	delete(b.pending, t.ID+"|"+sigReview)
-	delete(b.pending, t.ID+"|"+sigParkedDue)
-	s.forgetSupervisePending(t.ID+"|"+sigReview, t.ID+"|"+sigParkedDue)
-	b.mu.Unlock()
 	if !s.retractSupervisedIdle(ctx, t.ID) {
 		s.logf("task %s: could not retire the previous stretch's idle; its durable forms stay for retry", t.ID)
 	}

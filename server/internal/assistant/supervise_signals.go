@@ -194,13 +194,27 @@ func (b *superviseBook) init() {
 }
 
 // restoreSupervisePending merges the durable outbox into the in-memory gather exactly once. A signal that arrived
-// meanwhile wins; a failed read is retried by the digest timer rather than marking the outbox loaded.
+// meanwhile wins; a failed read is retried by the digest timer rather than marking the outbox loaded. Already-told
+// provisional starts are retracted before the snapshot: startup recovery reaches this path before any session list.
 func (s *Service) restoreSupervisePending(ctx context.Context) {
 	b := &s.supervise
+	b.mu.Lock()
+	loaded := b.pendingLoaded
+	b.mu.Unlock()
+	if loaded {
+		return
+	}
+	if !s.retractToldStartUnknowns(ctx) {
+		b.mu.Lock()
+		b.init()
+		s.retryDigestLocked(s.superviseTimings().urgent)
+		b.mu.Unlock()
+		return
+	}
 	b.pendingLoadMu.Lock()
 	defer b.pendingLoadMu.Unlock()
 	b.mu.Lock()
-	loaded := b.pendingLoaded
+	loaded = b.pendingLoaded
 	b.mu.Unlock()
 	if loaded {
 		return
@@ -557,6 +571,32 @@ func (s *Service) retractSupervisedIdle(ctx context.Context, todoID string) bool
 	return true
 }
 
+// toldStartUnknownIDs returns provisional starts whose confirmation receipt survived the old process. The caller
+// decides whether to reconcile only these durable receipts or add current exact creation ids too.
+func (s *Service) toldStartUnknownIDs(ctx context.Context) ([]string, bool) {
+	turns := &s.tasks.turns
+	turns.mu.Lock()
+	defer turns.mu.Unlock()
+	if !s.turnsReadLocked(ctx) {
+		return nil, false
+	}
+	var ids []string
+	for id, entry := range turns.doc.Turns {
+		if sig := entry.Signal; sig != nil && sig.Kind == sigUnjudged && sig.Key == "start-unknown@"+id && sig.Told != nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids, true
+}
+
+// retractToldStartUnknowns runs before restoreSupervisePending takes its snapshot. Taking the same
+// pendingLoadMu → dedupMu order as every other retraction keeps a concurrent restore or digest from reinserting it.
+func (s *Service) retractToldStartUnknowns(ctx context.Context) bool {
+	ids, ok := s.toldStartUnknownIDs(ctx)
+	return ok && s.retractStartUnknowns(ctx, ids)
+}
+
 // retractConfirmedStartUnknowns reconciles every start whose exact outcome is already known before a session-list
 // drain or digest can deliver an old signal. A persisted told receipt is confirmation even when the task Agent is
 // listed by another computer or no relay message is queued; a non-offline creation id also confirms before the
@@ -570,19 +610,14 @@ func (s *Service) retractConfirmedStartUnknowns(ctx context.Context, sessions []
 	if !loaded {
 		return false // drainRelays must not get a second, successful read before retraction.
 	}
-	confirmed := map[string]struct{}{}
-	turns := &s.tasks.turns
-	turns.mu.Lock()
-	if !s.turnsReadLocked(ctx) {
-		turns.mu.Unlock()
+	ids, ok := s.toldStartUnknownIDs(ctx)
+	if !ok {
 		return false
 	}
-	for id, entry := range turns.doc.Turns {
-		if sig := entry.Signal; sig != nil && sig.Kind == sigUnjudged && sig.Key == "start-unknown@"+id && sig.Told != nil {
-			confirmed[id] = struct{}{}
-		}
+	confirmed := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		confirmed[id] = struct{}{}
 	}
-	turns.mu.Unlock()
 	for _, session := range sessions {
 		if session.Status == proto.StatusOffline {
 			continue
@@ -591,7 +626,7 @@ func (s *Service) retractConfirmedStartUnknowns(ctx context.Context, sessions []
 			confirmed[id] = struct{}{}
 		}
 	}
-	ids := make([]string, 0, len(confirmed))
+	ids = ids[:0]
 	for id := range confirmed {
 		ids = append(ids, id)
 	}
@@ -610,12 +645,28 @@ func (s *Service) replaceSupervisePending(old, next superviseSignal) {
 }
 
 // forgetSupervisePending removes signals answered or silenced elsewhere, whether or not they were restored in memory.
+// A working/review sweep calls this even when the outbox has no matching entry; do not turn those no-ops into writes.
 func (s *Service) forgetSupervisePending(keys ...string) {
-	s.updateSupervisePending(func(pending map[string]superviseSignal) {
-		for _, key := range keys {
-			delete(pending, key)
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !s.relayLocked(context.Background()) {
+		return
+	}
+	removed := false
+	for _, key := range keys {
+		if _, ok := r.st.SupervisePending[key]; ok {
+			delete(r.st.SupervisePending, key)
+			removed = true
 		}
-	})
+	}
+	if !removed {
+		return
+	}
+	if len(r.st.SupervisePending) == 0 {
+		r.st.SupervisePending = nil
+	}
+	s.saveRelayLocked()
 }
 
 // superviseTimings are how supervision messages gather and space out (Service.superviseTimes; a zero field: the

@@ -538,6 +538,38 @@ func TestUnreachableLeaderWithoutUpperRetriesInCurrentProcess(t *testing.T) {
 	}
 }
 
+// Resumed work makes an earlier idle stop moot even when no review or owner wait is stored. The durable-only form
+// left by a restart must be forgotten before restoration; a genuinely new stop remains the control (#5732).
+func TestSupervisedWorkingForgetsDurableIdleBeforeRestore(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	ctx := context.Background()
+	old := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "idle-before-resume", Detail: "obsolete idle stop", At: time.Now()}
+	s.signal(old)
+	if got := storedSupervisePending(t, s)[old.id()]; got.Key != old.Key {
+		t.Fatalf("the idle outbox fixture was not persisted: %+v", got)
+	}
+	simulateSupervisionRestart(t, s)
+	resumed := todo
+	resumed.Supervision = &Supervision{Supervisor: "conv1", State: reviewRework, Round: 1}
+	s.supervisedWorking(ctx, resumed)
+	if got := storedSupervisePending(t, s)[old.id()]; got.Key == old.Key {
+		t.Error("resumed work left the old idle stop in the durable outbox")
+	}
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(ctx)
+	if text := strings.Join(f.noticesTo("conv1"), "\n"); strings.Contains(text, "obsolete idle stop") {
+		t.Fatalf("the old idle stop was restored and delivered after work resumed: %s", text)
+	}
+	fresh := old
+	fresh.Key, fresh.Detail, fresh.At = "idle-after-resume", "new idle stop", time.Now()
+	s.signal(fresh)
+	if got := storedSupervisePending(t, s)[fresh.id()]; got.Key != fresh.Key {
+		t.Errorf("a genuinely new idle stop was incorrectly suppressed: %+v", got)
+	}
+}
+
 // Queue admission and outbox acknowledgment are one relay-state write. An older crash state with both is reconciled.
 func TestQueuedSupervisionAndOutboxAreAtomic(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}

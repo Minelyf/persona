@@ -194,7 +194,7 @@ var ownerPushTimeout = 10 * time.Second
 
 // noteOwnerWait makes the owner's action the task's visible state and tells the supervisor at once. A stretch pushes
 // once after delivery; an undelivered push may retry when its conversation route recovers (#5732).
-func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, reason string) {
+func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, reason string) bool {
 	v, changed, err := s.updateSupervision(ctx, t.ID, func(v *Supervision) bool {
 		if v.Waits != nil && v.Waits.Work.Equal(work) && v.State == reviewNeedsUser {
 			return false
@@ -205,7 +205,7 @@ func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, rea
 	})
 	if err != nil {
 		s.logf("task %s: owner wait: %v", t.ID, err)
-		return
+		return false
 	}
 	s.signal(superviseSignal{Todo: t.ID, Kind: sigIdle, Key: work.UTC().Format(time.RFC3339Nano), Detail: "要用户决定：" + reason}) // i18n-ignore: the supervision message is the assistant's prompt
 	if changed || (v.Waits != nil && v.Waits.PushPending) {
@@ -213,6 +213,7 @@ func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, rea
 		// its conversation was not configured yet) may retry; a delivered one has PushPending cleared.
 		s.startOwnerWaitDelivery(ctx, t, work, reason)
 	}
+	return true
 }
 
 // startOwnerWaitDelivery gives one push and its durable receipt an independent deadline even when its caller is a

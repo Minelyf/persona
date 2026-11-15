@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,6 +99,65 @@ func TestReopenedTerminalNeedsUserWaitsAndPushesOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+type flakySupervisionStore struct {
+	*db.DB
+	mu       sync.Mutex
+	failures int
+	failed   chan struct{}
+}
+
+func (s *flakySupervisionStore) failNext() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures = 1
+}
+
+func (s *flakySupervisionStore) PutTodoSupervision(ctx context.Context, row db.TodoSupervisionRow) error {
+	s.mu.Lock()
+	if s.failures > 0 {
+		s.failures--
+		s.mu.Unlock()
+		s.failed <- struct{}{}
+		return errors.New("injected owner-wait write failure")
+	}
+	s.mu.Unlock()
+	return s.DB.PutTodoSupervision(ctx, row)
+}
+
+// A supervision-write outage must not strand an already-judged turn with no owner wait. Leaving the turn unjudged lets
+// the ordinary recovery path apply the same work again after the store returns (#5732).
+func TestOwnerWaitWriteFailureLeavesTurnRecoverable(t *testing.T) {
+	st := &flakySupervisionStore{DB: todoTestDB(t), failed: make(chan struct{}, 1)}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	withWebBot(f, testWeb)
+	f.judge = `{"verdict":"needs_user","reason":"需要你本人操作"}`
+	agentTurn(s, f, proto.StatusWorking, "", 0)
+	s.tasks.mu.Lock()
+	work := s.tasks.working[todo.ID]
+	s.tasks.mu.Unlock()
+	st.failNext()
+	agentTurn(s, f, proto.StatusDone, "Spec 已完成，下一步由你发起实现。", 0)
+	select {
+	case <-st.failed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the owner-wait write was not attempted")
+	}
+	s.tasks.turns.mu.Lock()
+	turn := s.tasks.turns.doc.Turns[todo.ID]
+	s.tasks.turns.mu.Unlock()
+	if turn.Judged != nil {
+		t.Error("a failed owner-wait write left the turn finally judged, so recovery would skip it")
+	}
+	last := proto.Session{SessionID: "s1", MachineID: "box", Status: proto.StatusDone, State: proto.StateUnread,
+		LastText: "Spec 已完成，下一步由你发起实现。", UpdatedAt: time.Now()}
+	s.turnAgain(context.Background(), todoNow(s, todo.ID), turn, last, last.LastText, work, true)
+	cur := todoNow(s, todo.ID)
+	if cur.Supervision.State != reviewNeedsUser || cur.Supervision.Waits == nil {
+		t.Fatalf("recovered turn = %+v, want a visible owner wait", cur.Supervision)
+	}
+	waitFor(t, "the recovered owner-action push", func() bool { return len(f.pushed()) == 1 })
 }
 
 // Main-dispatched tasks are quiet by default, but an owner-only action still gets its one push. Quiet suppresses

@@ -265,7 +265,8 @@ nonisolated enum TodoTriageLogic {
         let finished = status == .unread || review == .pendingReview || (ask != nil && (ask?.outcome ?? "").isEmpty)
             || ask?.outcome == "done"
         let acceptanceRequired = !seenCanFile(todo)
-        if finished, !seen(last) || acceptanceRequired { return at(.justDone, .finishedUnseen) }
+        // Parked open-PR work is not awaiting acceptance; keep it in PR to Merge, matching Android and the web (#5732).
+        if finished, (!seen(last) || acceptanceRequired), todo.supervision?.state != "parked" { return at(.justDone, .finishedUnseen) }
         if hasOpenPR(todo, now: now) { return at(.pr, .prOpen) }
         // seen since it last moved, and no PR waits on the owner; a concern is never Done while open
         if finished, !concern { return at(.done, .seen) }

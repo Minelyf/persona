@@ -332,6 +332,7 @@ func TestStartDefaultsGoalRefusedStartsWithoutIt(t *testing.T) {
 
 // The facts a start gives say which conversation actually follows the task up, not which one planned it. New work
 // planned by a leader, or carrying the legacy supervisor input, is still main-supervised; read-only and role ride along.
+// The explicit manual-Agent and task-leader worker topologies keep their specialized class.
 func TestStartDefaultsFactsSayWhoSupervises(t *testing.T) {
 	s, f := newQuietService(t)
 	f.devices = []Device{{ID: "box", Name: "box", Home: "/home/me", Online: true, Reachable: true}}
@@ -403,8 +404,8 @@ func putStartDefaults(t *testing.T, s *Service, role, ext, body string) (int, st
 }
 
 // A policy matches the actual supervisor, not the planning conversation. A leader-only rule leaves new work alone even
-// when a leader planned it; replacing it with a main rule fills writable starts, while read-only stays untouched. The
-// policy is the one an extension wrote through the route.
+// when a leader planned it; the explicit manual-leader worker topology still matches. Replacing it with a main rule
+// fills writable starts, while read-only stays untouched. The policy is the one an extension wrote through the route.
 func TestStartDefaultsPolicyOnlyWhereItsRuleMatches(t *testing.T) {
 	s, f := newQuietService(t)
 	f.devices = []Device{{ID: "box", Name: "box", Home: "/home/me", Online: true, Reachable: true}}
@@ -449,6 +450,19 @@ func TestStartDefaultsPolicyOnlyWhereItsRuleMatches(t *testing.T) {
 	own := start("conv1", false)
 	if own["ultracode"] != nil || own["goal"] != nil || own["effort"] == "max" {
 		t.Fatalf("the main conversation's own task got the leader-only defaults: %v", own)
+	}
+	// The specialized manual-leader topology still matches. Its worker takes the leader conversation's class from the
+	// parent task's ledger, rather than from the new-plan default (#5732).
+	putTodo(s, Todo{ID: "todo_leader_defaults", Title: "L", Supervision: &Supervision{Supervisor: "lead1"},
+		Agents: []TodoAgent{{MachineID: "server", SessionID: "lead1", Source: sourceLeader, Agent: "claude"}}})
+	worker := PlanTask{Title: "W", Prompt: "fix it", Machine: "box", Cwd: "/code/app", Permission: "bypassPermissions",
+		DoneWhen: []string{"CI is green"}, ExpectMinutes: 30, Parent: "todo_leader_defaults"}
+	if _, _, err := s.startTaskAgent(ctx, &worker, false); err != nil {
+		t.Fatal(err)
+	}
+	led = startsOf(f)[2]
+	if led["ultracode"] != true || led["effort"] != "max" || led["goal"] == nil {
+		t.Fatalf("a manual leader's worker started without the defaults: %v", led)
 	}
 	ro := start("lead1", true)
 	if ro["ultracode"] != nil || ro["goal"] != nil || ro["effort"] == "max" {

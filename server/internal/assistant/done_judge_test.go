@@ -168,6 +168,8 @@ func TestJudgeTaskDoneWithDetectsOwnerActionInTheReply(t *testing.T) {
 		{"conditional English guidance with a time", "If you need to deploy at 10:30, you need to notify the owner first.", verdictDone, ""},
 		{"decimal version keeps a trailing conditional", "The work is complete. You need to roll back to 1.2 if the release fails.", verdictDone, ""},
 		{"decimal version keeps an even-if requirement direct", "The work is complete. You need to roll back to 1.2 even if the release fails.", verdictNeedsUser, "You need to"},
+		{"conditional English guidance after so with a comma", "So, if you need to deploy, you need to notify the owner first.", verdictDone, ""},
+		{"conditional English guidance after so without a comma", "So if you need to deploy, you need to notify the owner first.", verdictDone, ""},
 		{"negated English owner requirement", "You don't need to approve the release; it is already live.", verdictDone, ""},
 		{"negated English requirement does not hide a later direct one", "You don't need to roll back. You need to approve the release yourself.", verdictNeedsUser, "You need to"},
 		{"negated English contraction does not hide a later direct one", "You won't need to roll back. You'll need to approve the release yourself.", verdictNeedsUser, "You'll need"},

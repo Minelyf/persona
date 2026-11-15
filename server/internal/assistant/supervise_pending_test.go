@@ -559,6 +559,9 @@ func TestSupervisedWorkingForgetsDurableIdleBeforeRestore(t *testing.T) {
 	}
 	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
 	s.sendDigest(ctx)
+	// The fresh control only needs durable admission. Do not leave its 1ns timer running into the shared retry knobs'
+	// cleanup after this test returns.
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
 	if text := strings.Join(f.noticesTo("conv1"), "\n"); strings.Contains(text, "obsolete idle stop") {
 		t.Fatalf("the old idle stop was restored and delivered after work resumed: %s", text)
 	}

@@ -554,6 +554,7 @@ class TodoTriageTest {
         val td = todo("t", agents = listOf(agent("limited")), reopenedAt = hoursAgo(4), supervision = acceptedReopened())
         assertEquals(TriageStatus.UsageLimit, td.triageStatus(limitedLookup, now))
         assertTrue(td.acceptedAtRest(limitedLookup))
+        assertEquals(TodoState.Done, td.shownState(limitedLookup, now))
         assertFalse("working is not at rest", td.copy(agents = listOf(agent("run"))).acceptedAtRest(lookup))
         assertFalse("needs-you is not at rest", td.copy(agents = listOf(agent("ask"))).acceptedAtRest(lookup))
         val expiredLookup = lookupOf(limitedSession.copy(turnErrorResetsAt = Instant.ofEpochMilli(now - 11 * 60_000L).toString()))

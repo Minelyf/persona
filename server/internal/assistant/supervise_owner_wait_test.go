@@ -73,6 +73,33 @@ func TestNeedsUserJudgmentWaitsAndPushesOnce(t *testing.T) {
 	}
 }
 
+// Reopening accepted or cancelled work does not make a later explicit owner action moot. The old terminal verdict
+// suppresses only an ordinary stopped-short/unjudged signal; needs_user still becomes visible and pushes once (#5732).
+func TestReopenedTerminalNeedsUserWaitsAndPushesOnce(t *testing.T) {
+	for _, terminal := range []string{reviewAccepted, reviewCancelled} {
+		t.Run(terminal, func(t *testing.T) {
+			s, f, todo := newSupervisedService(t)
+			withWebBot(f, testWeb)
+			reopened := todo
+			sup := *todo.Supervision
+			sup.State = terminal
+			reopened.Supervision = &sup
+			putTodo(s, reopened)
+			work := time.Now().UTC()
+			s.superviseJudged(context.Background(), reopened, work, taskDoneCheck{Verdict: verdictNeedsUser, Reason: "需要你本人操作"}, nil)
+			cur := todoNow(s, todo.ID)
+			if cur.Supervision.State != reviewNeedsUser || cur.Supervision.Waits == nil {
+				t.Fatalf("reopened %s judgment = %+v, want a visible owner wait", terminal, cur.Supervision)
+			}
+			waitFor(t, "the reopened task's needs-user push", func() bool { return len(f.pushed()) == 1 })
+			s.superviseJudged(context.Background(), cur, work, taskDoneCheck{Verdict: verdictNeedsUser, Reason: "需要你本人操作"}, nil)
+			if got := len(f.pushed()); got != 1 {
+				t.Fatalf("same reopened wait pushed %d times", got)
+			}
+		})
+	}
+}
+
 // Main-dispatched tasks are quiet by default, but an owner-only action still gets its one push. Quiet suppresses
 // routine task notices, never the request the owner must answer (#5732).
 func TestMainQuietNeedsUserJudgmentPushesOnce(t *testing.T) {

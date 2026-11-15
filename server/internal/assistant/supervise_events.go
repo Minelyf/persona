@@ -126,9 +126,10 @@ func (s *Service) superviseJudged(ctx context.Context, t Todo, work time.Time, c
 	if st == reviewNeedsUser || st == reviewParked {
 		return // the supervisor knows it waits: for the user, or parked until its time (parked.go)
 	}
-	if v := t.Supervision; t.DoneAt == nil && (v.State == reviewAccepted || v.State == reviewCancelled) {
+	if v := t.Supervision; t.DoneAt == nil && (v.State == reviewAccepted || v.State == reviewCancelled) && c.Verdict != verdictNeedsUser {
 		// Closed by its review, open again only because its agent was sent more (taskWorking, #5892): what it did then
-		// is no task stopped short. Done, it waits for review again (above); else the supervisor is not told (#3111).
+		// is no task stopped short. Done, it waits for review again (above); an explicit owner action still waits for
+		// the owner (below); every other outcome leaves the supervisor out of it (#3111, #5732).
 		s.logf("task %s: %s before, more work since judged %s: not told", t.ID, v.State, cmp.Or(c.Verdict, "with an error"))
 		return
 	}

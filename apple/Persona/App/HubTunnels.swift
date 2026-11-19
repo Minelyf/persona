@@ -130,7 +130,10 @@ extension AppModel {
                     }
                     return tried
                 }
-                direct = await HubRoute.answering(candidates)
+                let start = Date()
+                let asked = await HubRoute.answeringTried(candidates)
+                tried(group, asked.tried, since: start)
+                direct = asked.winner
                 seen.direct = direct != nil
                 if let tried = await warming?.value { seen.opened.merge(tried) { $1 } }
             case .direct:
@@ -156,7 +159,10 @@ extension AppModel {
     private func through(_ t: HubTunnel, _ group: String) -> ServerConfig {
         t.watchDirect(answers: { [weak self] in
             guard let self else { return false }
-            return await HubRoute.answering(HubRoute.candidates(self.registry, group: group)) != nil
+            let start = Date()
+            let asked = await HubRoute.answeringTried(HubRoute.candidates(self.registry, group: group))
+            self.tried(group, asked.tried, since: start)
+            return asked.winner != nil
         }, moveBack: { [weak self] in self?.link(group)?.live.reroute() })
         return t.hub.config
     }

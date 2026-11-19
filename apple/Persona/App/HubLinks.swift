@@ -154,6 +154,7 @@ extension AppModel {
 
     /// Back in the app: every group's socket opens again.
     func resumeLinks() {
+        reportGroups() // a period in front begins for Developing Persona's connection tally
         for link in links {
             link.live.suspended = false
             link.live.ensureConnected()
@@ -162,6 +163,7 @@ extension AppModel {
 
     /// In the background: every socket closes (the hubs wake the phone with a silent push when they need it).
     func suspendLinks() {
+        addressBoard.wentToBackground(at: .now) // probes still running are cut short (#11390)
         for link in links {
             link.live.suspended = true
             link.live.disconnect()
@@ -245,7 +247,10 @@ extension AppModel {
             guard let self else { return nil }
             if !self.hubTunnels(group).isEmpty { return await self.tunnelRoute(group) }
             let candidates = HubRoute.candidates(self.registry, group: group)
-            return await HubRoute.pick(candidates)?.config
+            let start = Date()
+            let (picked, tried) = await HubRoute.pickTried(candidates)
+            self.tried(group, tried, since: start)
+            return picked?.config
         }
     }
 
@@ -253,6 +258,7 @@ extension AppModel {
     /// that changed what belongs together (docs/protocol/multi-hub.md「Grouping」).
     func learned(_ hello: HubHello, group: String) {
         guard let link = link(group), !link.isDemo else { return }
+        reportConnected(hello, group: group)
         defer { watchCenter(group) } // on a member now? (after the registry learned who the center is)
         var r = registry
         let on = link.live.currentConfig
@@ -292,6 +298,7 @@ extension AppModel {
         guard groupsChanged else {
             // Same groups, a new address to try: the socket picks among them from its next attempt.
             for l in links where !l.isDemo { l.live.route = routePicker(l.group) }
+            arrangeAddresses()
             return
         }
         // Groups merged or split: the groups that are gone take their lists with them (the group that stays lists
@@ -334,8 +341,12 @@ extension AppModel {
     /// opens the socket anyway.
     private func preferredAnswers(_ group: String) async -> Bool {
         guard let link = link(group), !link.live.suspended else { return false }
+        let all = HubRoute.candidates(registry, group: group)
         for c in preferred(group) {
-            if await HubRoute.healthProbe(c) { return true }
+            let start = Date()
+            let outcome = await HubRoute.healthCheck(c)
+            tried(group, HubRoute.settled([.init(candidate: c, outcome: outcome, at: Date())], among: all), since: start)
+            if outcome == .answers { return true }
         }
         return false
     }
@@ -352,6 +363,69 @@ extension AppModel {
 
     /// A group's socket is on a candidate behind another (a member while the center is known, a hub's later address).
     func onMember(_ group: String) -> Bool { !preferred(group).isEmpty }
+
+    // MARK: What each address came to (#11390)
+
+    /// The groups' addresses in the order they are tried, for Connection Details' lines; a group that went takes its
+    /// lines with it. Also tells Developing Persona's tally which groups there are.
+    func arrangeAddresses() {
+        let groups = links.filter { !$0.isDemo }.map(\.group)
+        addressBoard.keep(Set(groups))
+        for g in groups { addressBoard.arrange(g, addresses: HubRoute.candidates(registry, group: g).map(\.url)) }
+        #if DEBUG
+        // `-showConnectionAddresses YES`: every outcome on the hub-level group's addresses, made up (screenshots).
+        if UserDefaults.standard.bool(forKey: "showConnectionAddresses"), let g = hub?.group, groups.contains(g) { addressBoard.seed(g) }
+        #endif
+        reportGroups()
+    }
+
+    /// What an attempt that began at `start` found at each address (the probes): onto the group's lines, and into
+    /// Developing Persona's tally while the switch is on. What came after the app went to the background meanwhile was
+    /// cut short: unknown.
+    func tried(_ group: String, _ tried: [HubRoute.Tried], since start: Date) {
+        guard !tried.isEmpty, let link = link(group), !link.isDemo else { return }
+        let tried = addressBoard.cutShort(tried, since: start)
+        addressBoard.record(group, tried.map { ($0.candidate.url, $0.outcome, $0.at) })
+        if DevProbe.listening { DevProbe.link(.tried(group: group, tried.map(\.outcome))) }
+    }
+
+    /// What one of the group's socket attempts came to at the address it went to (`LiveConnection.onAttempt`). One
+    /// source per attempt and address: a group the socket goes to straight (one address, no tunnel) has no probe, so
+    /// the socket says; otherwise the probe said, and the socket only replaces an Answers at the address it then failed
+    /// to open.
+    func socketTried(_ group: String, _ config: ServerConfig, _ outcome: HubOutcome) {
+        guard let link = link(group), !link.isDemo else { return }
+        if link.live.route != nil {
+            guard outcome != .answers, addressBoard.outcome(group, config.url) == .answers else { return }
+        }
+        addressBoard.record(group, [(config.url, outcome, Date())])
+        if DevProbe.listening { DevProbe.link(.tried(group: group, [outcome])) }
+    }
+
+    /// Developing Persona's tally: the groups there are (Demo Mode left out). Nothing while the switch is off.
+    func reportGroups() {
+        guard DevProbe.listening else { return }
+        DevProbe.link(.groups(Set(links.filter { !$0.isDemo }.map(\.group))))
+    }
+
+    /// Developing Persona's tally: the group's socket is on its hub, and how it got there (only fixed words, never the
+    /// address). Nothing while the switch is off.
+    func reportConnected(_ hello: HubHello, group: String) {
+        guard DevProbe.listening, let link = link(group), !link.isDemo, let on = link.live.currentConfig else { return }
+        let key = HubRoute.key(on.url)
+        let candidate = HubRoute.candidates(registry, group: group).first { HubRoute.key($0.url) == key }
+        let address: DevProbe.Connected.Address = candidate.map { $0.hub == nil ? .mesh : $0.address == 0 ? .paired : .added } ?? .paired
+        var route = DevProbe.Connected.Route.direct
+        if let hub = registry.members(group).first(where: { $0.configs.contains { HubRoute.key($0.url) == key } }) {
+            if SSHTunnels.shared.routed.contains(hub.id) { route = .sshTunnel }
+            else if LocalProxies.shared.routed.contains(hub.id) { route = .localProxy }
+            else if InAppTunnels.shared.routed.contains(hub.id) { route = .inAppTunnel }
+        }
+        let own = hello.mesh?.first { $0.isSelf == true } ?? hello.mesh?.first { $0.hubID == hello.hubID }
+        DevProbe.link(.connected(group: group, .init(trust: on.url.scheme?.lowercased() == "https" ? .system : .plainHTTP,
+                                                     accessToken: on.access != nil, route: route, address: address,
+                                                     helloFingerprint: own?.fp?.isEmpty == false)))
+    }
 
     /// The SSH tunnels that go with group (#2379): each of its hubs may have one, kept under the hub's id.
     nonisolated static func tunnelIDs(removing group: String, from registry: HubRegistry) -> [String] {

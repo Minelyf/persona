@@ -648,6 +648,9 @@ final class LiveConnection {
 
     /// The hub `route` picked for the next attempt.
     @ObservationIgnored var onRoute: ((ServerConfig) -> Void)?
+    /// What an attempt came to at the address it went to (#11390): `answers` once it connects, and when it fails before
+    /// connecting, why (`HubOutcome(failure:)`). A connected socket dropping is not an attempt: the next one says.
+    @ObservationIgnored var onAttempt: ((ServerConfig, HubOutcome) -> Void)?
 
     private func openSocket(_ given: ServerConfig, _ gen: Int) {
         let config = credential?(given) ?? given
@@ -763,6 +766,7 @@ final class LiveConnection {
                     if case .hello(let hello)? = event { self.personaContracts = hello.features.contains(HubNaming.feature) }
                     if first {
                         DevProbe.socket(.connected)
+                        if let on = self.config { self.onAttempt?(on, .answers) }
                         self.state = .connected
                         self.sayHello()
                         self.backoff = 1
@@ -775,6 +779,7 @@ final class LiveConnection {
                     self.receive(t, gen)
                 case .failure(let err):
                     DevProbe.socket(.dropped)
+                    let attempt = self.state != .connected // not a drop: this attempt never connected
                     self.personaContracts = false
                     let planned = self.restartNotice || (!self.closedQuiet && t.closeCode == .goingAway)
                     self.dropped(restart: planned)
@@ -787,6 +792,9 @@ final class LiveConnection {
                     self.state = .failed(refused ? String(localized: "The hub doesn't accept this device's credentials (401)")
                                          : access?.localizedDescription ?? err.localizedDescription)
                     self.stalled = false
+                    if attempt, let on = self.config {
+                        self.onAttempt?(on, refused || access != nil ? HubOutcome.refusedHandshake : HubOutcome(failure: err))
+                    }
                     self.scheduleReconnect(gen)
                 }
             }

@@ -104,6 +104,7 @@ struct ConnectionDetails: View {
                     .font(Theme.Font.caption)
                     .foregroundStyle(.secondary)
                 }
+                if let group = model.hub?.group { ConnectionAddresses(group: group) }
                 if phase == .rejected {
                     Button {
                         Haptics.tap()
@@ -221,5 +222,45 @@ struct ConnectionDetails: View {
         if s < 60 { return String(localized: "\(s) seconds ago") }
         if s < 3600 { return String(localized: "\(s / 60) min ago") }
         return Fmt.relative(date, now: now)
+    }
+}
+
+/// One line per address the app tries for the group, in that order, with what its last try came to and when (#11390,
+/// `HubAddressBoard`); the address the socket is on says In Use, as Settings › hub › Addresses does. Its own view, so
+/// the details' redraw every second does not run it: it reads the lines worked out when a try ends and the socket's
+/// state (docs/apple/performance.md P4, P5).
+struct ConnectionAddresses: View {
+    @Environment(AppModel.self) private var model
+    let group: String
+
+    var body: some View {
+        let lines = model.addressBoard.lines[group] ?? []
+        if !lines.isEmpty {
+            let live = model.socket(group)
+            let inUse = live?.state == .connected ? live?.currentConfig.map { HubRoute.key($0.url) } : nil
+            VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                Text("Addresses").font(Theme.Font.captionStrong).foregroundStyle(.secondary)
+                ForEach(lines) { line in row(line, inUse: line.id == inUse) }
+            }
+            .accessibilityIdentifier("connection.addresses")
+        }
+    }
+
+    private func row(_ line: HubAddressBoard.Line, inUse: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            Text(verbatim: line.address).font(Theme.Font.caption).lineLimit(1).truncationMode(.middle)
+            HStack(spacing: Theme.Space.sm) {
+                if inUse {
+                    Chip(text: String(localized: "In Use [Hubs View 564c83]"), look: .outline)
+                } else if line.outcome != nil {
+                    Chip(text: line.word, look: .neutral)
+                    if let tried = line.tried { Text(tried).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1) }
+                } else {
+                    Text(line.word).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("connection.address")
     }
 }

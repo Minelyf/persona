@@ -145,6 +145,21 @@ iOS implementation (#4670): Settings › hub › Addresses keeps a paired hub's 
 - Known gap against the spec above: iOS does not hold plain HTTP to the LAN or check the peer address. An `http://` address works as the paired one does, on any host, and the device token goes over it unencrypted. Add `http://` addresses only for networks you trust (a VPN overlay, the LAN).
 - Typing an address: one without a scheme gets `https://` in front, a bare IP or `localhost` too (`http://` only when typed), and the line under the field shows the full address **Add Address** will add. An address that still can't be read, a scheme other than http or https, or one the hub has already (scheme and host in any case, the default port written or not) is said on that line instead, and Add stays off (`HubAddressInput`, `apple/Shared/Hubs.swift`).
 - Settings › hub shows the address in use under the hub's name, and the Addresses page marks it **In Use**.
+- **What each try came to** (#11390, `HubOutcome`, `apple/Shared/HubOutcome.swift`): the probe gives each address one outcome instead of yes or no. Only
+  **Answers** passes, so which address is taken, the order, the grace, the probe's 3-second timeout and the retries are as above.
+  - **Answers**: a healthy hub answer (`ok`), with the paired hub's `hub_id` on an added address.
+  - **Certificate not trusted**: TLS failed the system's trust (an unknown root such as the managed self-signed certificate above, a wrong host name, an
+    expired certificate). Kept apart from the rest: without pinning the phone can't tell the hub's own self-signed certificate from someone else's.
+  - **Not your hub**: an added address answered with another `hub_id`. On a private address (loopback, LAN IPv4, link-local, ULA, `localhost`, `.local`;
+    `HubAddressScope`) it counts as Couldn't connect, since there it only says another device has that address on this network, unless every address
+    the attempt tries is private, as Android does (`HubRouteSelector.worst`). The paired address is not checked here: another `hub_id` there is left to the hello.
+  - **Couldn't connect**: refused, timed out, host not found, connection lost, a TLS handshake cut short, or not a healthy hub answer (another status, no
+    `hub_id` where one is expected, `ok` not true, Cloudflare Access answering, the socket turned down with 401).
+  - **Unknown**: the probe was cut short (another address won and the rest were cancelled), or the app went to the background before it finished.
+  - A group with one address and no tunnel is never probed: its outcome comes from the socket's own attempt, classified the same way. Otherwise the
+    probe says, and the socket replaces only an Answers at the address it then failed to open, so each attempt counts once per address. Connection
+    Details lists the addresses with their outcomes (`docs/apple/ios.md`, "Connection status (slow / offline networks)"); Developing Persona counts
+    opens by them weekly (`docs/operations/developing-persona.md`, "Connection tally (iOS)").
 - Not yet: the hub's own list (`/api/v1/endpoints`) does not feed this list, and the watch, widgets and other extensions keep the paired address.
 - DEBUG builds: `-seedHubAddresses <base64 of a [HubAddress] JSON>` sets the first hub's added addresses, `-tab settings -openHubAddresses YES` opens its page, and `-showHubAddressDraft <text>` starts its field with that text (screenshots).
 

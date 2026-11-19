@@ -43,6 +43,8 @@ final class AppModel {
     let portPresence = PortPresence()
     /// The hub-level group's socket (its state for the pages about the hub); every group has its own (`links`).
     var live: LiveConnection { hub?.live ?? idleLive }
+    /// What each group's addresses came to when last tried (#11390): Connection Details' lines.
+    let addressBoard = HubAddressBoard()
     @ObservationIgnored private let idleLive = LiveConnection()
     /// What the titles say about the links (Waiting for Network / Connecting… / Updating…).
     let connection: ConnectionStatus
@@ -784,6 +786,7 @@ final class AppModel {
         for gone in links where !out.contains(where: { $0 === gone }) { gone.live.disconnect() }
         links = out
         for link in links where !link.isDemo { link.live.route = routePicker(link.group) }
+        arrangeAddresses()
         if link(hubGroup) == nil, let first = links.first { hubGroup = first.group }
         applyPersonaPalette()
         relabelMachines()
@@ -799,6 +802,7 @@ final class AppModel {
         link.live.prepareEvent = { Self.prepare($0) }
         link.live.onConnected = { [weak self] in self?.didConnect(group) }
         link.live.onChange = { [weak self] in self?.connection.update() }
+        link.live.onAttempt = { [weak self] config, outcome in self?.socketTried(group, config, outcome) }
         link.live.credential = { [weak self] config in DeviceCredentialTrade.current(config, traded: self?.tradedTokens ?? [:]) }
         #if DEBUG
         if let hooks = linkHooksForTests {

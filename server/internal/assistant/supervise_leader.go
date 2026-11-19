@@ -51,6 +51,28 @@ func (s *Service) defaultPlanSupervisor(ctx context.Context, conversation, paren
 	return main, main != ""
 }
 
+// planTaskSupervisor resolves the reviewer before a plan starts. A runtime-backed conversation can dispatch work,
+// but new tasks still belong to main (#5732). If main itself cannot receive supervision policy, leave the plan open
+// for a compatible Claude Code or Codex reviewer instead of creating a legacy background route.
+func (s *Service) planTaskSupervisor(ctx context.Context, conversation string, task PlanTask) (string, error) {
+	if task.Parent != "" {
+		return conversation, nil
+	}
+	supervisor, _ := s.defaultPlanSupervisor(ctx, conversation, "")
+	if supervisor == "" {
+		return "", nil
+	}
+	cfg := s.settings(ctx)
+	machine := cfg.MachineID
+	if supervisor == cfg.Main {
+		machine = cfg.mainRouteMachine()
+	}
+	if s.runtimeConversation(ctx, machine, supervisor) {
+		return "", planInvalid{i18n.Err("assistant-conversations.supervision_reviewer_required")}
+	}
+	return supervisor, nil
+}
+
 // legacyLeaderPlanSupervision reports whether t's saved pre-#5732 plan explicitly assigned its current leader.
 // That topology is not the manual-Agent exception and rehomes to main. An unavailable or non-matching plan proves
 // nothing, so an explicit leader assignment is left alone rather than guessed away.

@@ -40,6 +40,7 @@ func (s *Service) startPlan(ctx context.Context, id string, edits []PlanTask, re
 	if p.State != planOpen {
 		return nil, errPlanNotOpen
 	}
+	supervisors := make([]string, len(p.Tasks))
 	for i := range p.Tasks {
 		if i < len(edits) {
 			applyPlanEdit(&p.Tasks[i], edits[i])
@@ -78,6 +79,9 @@ func (s *Service) startPlan(ctx context.Context, id string, edits []PlanTask, re
 		}
 		if err := s.checkContinuationScope(task); err != nil {
 			return nil, planInvalid{err}
+		}
+		if supervisors[i], err = s.planTaskSupervisor(ctx, p.Conversation, *task); err != nil {
+			return nil, err
 		}
 	}
 	p.State = planStarted
@@ -160,22 +164,17 @@ func (s *Service) startPlan(ctx context.Context, id string, edits []PlanTask, re
 		s.briefStarted(ctx, p, t, todo) // what was asked, kept from now on (task_brief_plan.go)
 		s.setTaskStageKind(ctx, todo.ID, "", "", taskStageKind(t.Readonly, t.DoneWhen, todo.PRURL), false)
 		// Every conversation-dispatched task is supervised by the main conversation; its origin still names where it
-		// was handed out (#5732). A task leader's worker is the exception: its leader Agent supervises it below.
-		if t.Parent == "" {
-			if sup, ok := s.defaultPlanSupervisor(ctx, p.Conversation, ""); ok {
-				if t.ReuseTodo == "" && sup != p.Conversation {
-					s.taskCard(ctx, sup, todo.ID, "")
-				}
-				if err := s.supervisePlanTask(ctx, todo.ID, sup, t); err != nil {
-					s.failPlanSupervision(ctx, todo, t, err)
-					continue
-				}
+		// was handed out (#5732). A task leader's worker keeps its leader Agent through supervisors[i].
+		if sup := supervisors[i]; sup != "" {
+			if t.Parent == "" && t.ReuseTodo == "" && sup != p.Conversation {
+				s.taskCard(ctx, sup, todo.ID, "")
+			}
+			if err := s.supervisePlanTask(ctx, todo.ID, sup, t); err != nil {
+				s.failPlanSupervision(ctx, todo, t, err)
+				continue
 			}
 		}
 		if t.Parent != "" { // a task leader's worker: supervised by its leader's agent, with no conversation to show a card in
-			if err := s.supervisePlanTask(ctx, todo.ID, p.Conversation, t); err != nil {
-				s.failPlanSupervision(ctx, todo, t, err)
-			}
 			continue
 		}
 		if t.ReuseTodo != "" {

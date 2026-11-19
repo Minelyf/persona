@@ -308,6 +308,7 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 		return "", err
 	}
 	var b strings.Builder
+	supervisor := ""
 	fmt.Fprintf(&b, "Queued %d task(s) for dispatch without asking (read-only, asked for by the user, a kind the user trusts, or one "+
 		"the user lets this scheduled task start):\n", len(started.Tasks))
 	for _, t := range started.Tasks {
@@ -315,14 +316,21 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 			fmt.Fprintf(&b, "- %s on %s: dispatch failed: %s\n", t.Title, t.Machine, t.Error)
 		} else {
 			fmt.Fprintf(&b, "- %s → todo %s on %s (dispatching)\n", t.Title, t.TodoID, t.Machine)
+			if todo, ok := s.todoNow(t.TodoID); ok && todo.Supervision != nil {
+				supervisor = todo.Supervision.Supervisor
+			}
 		}
 	}
 	b.WriteString("This is not confirmation that any agent started. Startup can still fail; the task cards and context snapshot show the outcome.")
-	if sup, ok := s.defaultPlanSupervisor(ctx, sessionID, ""); ok && sup != sessionID {
+	switch {
+	case supervisor == "":
+	case supervisor == sessionID:
+		b.WriteString(" You supervise them: a supervision message comes when one needs you (review it with task_review).")
+	case supervisor == s.settings(ctx).Main:
 		b.WriteString(" The main conversation supervises them (its supervision messages and task_review); this conversation " +
 			"gets a one-line notice with the task's link when each one ends.")
-	} else if ok {
-		b.WriteString(" You supervise them: a supervision message comes when one needs you (review it with task_review).")
+	default:
+		fmt.Fprintf(&b, " Leader conversation %s supervises them: their supervision messages go there, and it reviews them with task_review.", supervisor)
 	}
 	b.WriteString(dups)
 	return b.String(), nil

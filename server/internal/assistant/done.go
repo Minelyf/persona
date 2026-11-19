@@ -1294,11 +1294,6 @@ func (s *Service) applyTaskDone(ctx context.Context, t Todo, work time.Time, wor
 		if current, ok := s.todoNow(t.ID); ok {
 			t = current
 		}
-		if c.Verdict == verdictNeedsUser && !s.noteOwnerWait(ctx, t, work, c.Reason) {
-			// Do not mark the turn judged before its owner wait exists: recovery must apply this same work again after
-			// the supervision store returns. A successful write makes the second note below idempotent, push included.
-			return
-		}
 	}
 	s.tasks.completionMu.Lock()
 	defer s.tasks.completionMu.Unlock()
@@ -1307,6 +1302,11 @@ func (s *Service) applyTaskDone(ctx context.Context, t Todo, work time.Time, wor
 	}
 	if !worked {
 		work = t.CreatedAt
+	}
+	if c.Verdict == verdictNeedsUser && !s.noteOwnerWait(ctx, t, work, c.Reason) {
+		// Do not mark the turn judged before its owner wait exists: recovery must apply this same work again after
+		// the supervision store returns. A successful write makes the second note below idempotent, push included.
+		return
 	}
 	s.turnJudged(ctx, t.ID, c, err, "")     // on the turn's ledger before its signal: judged once, told once (task_turns.go)
 	s.superviseJudged(ctx, t, work, c, err) // never closed here: its supervisor reviews it (supervise.go)

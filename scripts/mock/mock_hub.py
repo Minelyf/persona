@@ -12409,6 +12409,8 @@ if os.environ.get("MOCK_MAIL_INBOX") == "off":
     LEGACY_CONNECTORS[1]["inbox"] = False
 
 # Telegram (the Telegram extension, #1704; docs/archive/extensions/plan-telegram.md): the user's own account, signed in from Settings › Connectors › Telegram a step at a time.
+# Its two inbox rows carry their conversations' pictures (connector.avatar_url, the avatars route serves made-up ones, #10923);
+# GET /mock/telegram_avatars?mode=before lists them as an older hub did, without.
 # All made up: api_id 1234567 (a hash of 32 zeros is refused), any phone starting with +, the code 12345, the 2FA
 # password example-password. MOCK_TELEGRAM=off|signed_out|signed_in|2fa|limited (unset: no Telegram connector at all;
 # limited: signed in and waiting out a flood wait Telegram asked for);
@@ -12954,11 +12956,28 @@ def tg_sticker(n=180):
 TG_AVATAR_COLORS = {"u1": (88, 160, 230), "u7": (230, 140, 90), "u8": (150, 110, 210), "c2": (90, 190, 150)}
 
 
+def tg_avatar(peer, n=96):
+    """A made-up picture of peer (no one's photo): a diagonal of its color into a lighter one, with soft discs, one for a
+    person and three for a group (c…), so a row's picture is plainly not its initial."""
+    base = TG_AVATAR_COLORS[peer]
+    light = tuple(min(255, c + 70) for c in base)
+    discs = [(0.36, 0.38, 0.22), (0.66, 0.40, 0.18), (0.50, 0.68, 0.20)] if peer.startswith("c") else [(0.5, 0.42, 0.2), (0.5, 0.95, 0.38)]
+    def px(x, y):
+        fx, fy = x / max(n - 1, 1), y / max(n - 1, 1)
+        f = (fx + fy) / 2
+        c = [int(base[i] + (light[i] - base[i]) * f) for i in range(3)]
+        for cx, cy, r in discs:
+            if (fx - cx) ** 2 + (fy - cy) ** 2 < r * r:
+                c = [int(v + (255 - v) * 0.55) for v in c]
+        return (*c, 255)
+    return tg_rgba(n, n, px)
+
+
 def tg_media(ref):
     """The bytes a made-up media ref names (refs as the connector makes them: a.<peer>.<photo>, m.<chat>.<id>.f|t)."""
     parts = ref.split(".")
     if parts[0] == "a" and len(parts) == 3 and parts[1] in TG_AVATAR_COLORS:
-        return png(96, 96, TG_AVATAR_COLORS[parts[1]])
+        return tg_avatar(parts[1])
     if ref == "m.u1.333.f":
         return tg_photo(400, 300, (110, 170, 235), (210, 230, 250))
     if ref == "m.u1.335.f":
@@ -13029,6 +13048,57 @@ def tg_thread(thread, before, limit):
     if len(msgs) > limit:
         out["before"] = page[0]["id"]
     return out
+
+
+def avatar_path(source, value):
+    """The avatars route's path for a value, as the hub lists it (extwire.AvatarURL)."""
+    return "/api/v1/avatars/%s/%s" % (source, base64.urlsafe_b64encode(value.encode()).rstrip(b"=").decode())
+
+
+def avatars_area(h, p):
+    """GET /api/v1/avatars/{source}/{value}?size= (#10923, docs/protocol/protocol.md "Avatars"): the made-up pictures the
+    mock's lists name, drawn at the size asked (64, 128, 256 or 512); True when it answered."""
+    if not p.startswith("/api/v1/avatars/"):
+        return False
+    source, _, seg = p[len("/api/v1/avatars/"):].partition("/")
+    try:
+        value = base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)).decode()
+    except Exception:
+        return h.send_json({"error": "not an avatar", "code": "bad_url"}, 404) or True
+    try:
+        asked = int(parse_qs(urlparse(h.path).query).get("size", ["128"])[0])
+    except ValueError:
+        asked = 128
+    size = next((e for e in (64, 128, 256, 512) if e >= asked), 512)
+    parts = value.split(".")
+    if source != "telegram" or not TELEGRAM_MODE or parts[0] != "a" or len(parts) != 3 or parts[1] not in TG_AVATAR_COLORS:
+        return h.send_json({"error": "no such picture", "code": "fetch_failed"}, 502) or True
+    data = tg_avatar(parts[1], size)
+    h.send_response(200)
+    h.send_header("Content-Type", "image/png"); h.send_header("Content-Length", str(len(data)))
+    h.send_header("X-Content-Type-Options", "nosniff")
+    h.send_header("Cache-Control", "private, max-age=31536000, immutable")
+    h.end_headers(); h.wfile.write(data)
+    return True
+
+
+# GET /mock/telegram_avatars?mode=before|1 (MOCK_TELEGRAM_INBOX, #10923): the Telegram rows as a hub before the avatars
+# route lists them (no connector.avatar_url: every app draws the initial), or with their pictures.
+TG_AVATARS = {"u1": "a.u1.501", "c2": "a.c2.900"}
+
+
+def telegram_avatars_area(h, method, p):
+    if not os.environ.get("MOCK_TELEGRAM_INBOX") or method != "GET" or p != "/mock/telegram_avatars":
+        return False
+    mode = parse_qs(urlparse(h.path).query).get("mode", ["1"])[0] or "1"
+    for x in INBOX:
+        c = x.get("connector") or {}
+        if x.get("source") == "telegram" and c.get("thread") in TG_AVATARS:
+            if mode == "before":
+                c.pop("avatar_url", None)
+            else:
+                c["avatar_url"] = avatar_path("telegram", TG_AVATARS[c["thread"]])
+    return h.send_json({"mode": mode}) or True
 
 
 def telegram_area(h, method, p, raw):
@@ -13137,13 +13207,13 @@ if os.environ.get("MOCK_TELEGRAM_INBOX"):
          "started_at": ago(minutes=12), "updated_at": ago(minutes=12), "tier": "action",
          "summary": "示例用户问你周末的活动还去不去", "reason": "等你回复", "read": False,
          "context": "示例用户（Telegram 私聊）\n昨天 20:15 我：好的，到时候见\n今天 09:40 示例用户：周末的示例活动还去吗？",
-         "connector": {"thread": "u1", "label": "私聊", "open_url": "tg://resolve?domain=example"}},
+         "connector": {"thread": "u1", "label": "私聊", "open_url": "tg://resolve?domain=example", "avatar_url": avatar_path("telegram", "a.u1.501")}},
         {"id": "telegram:mention2", "source": "telegram", "kind": "mention", "account": "telegram", "account_name": "Telegram",
          "title": "示例群", "sender": "另一个示例用户", "preview": "@example 这个示例方案你怎么看？", "count": 1,
          "started_at": ago(minutes=40), "updated_at": ago(minutes=40), "tier": "action",
          "summary": "群里有人问你对示例方案的看法", "reason": "@你", "read": False,
          "context": "示例群（Telegram 群）\n今天 09:12 另一个示例用户：@example 这个示例方案你怎么看？",
-         "connector": {"thread": "c2", "label": "@你", "open_url": "https://t.me/c/2/12"}},
+         "connector": {"thread": "c2", "label": "@你", "open_url": "https://t.me/c/2/12", "avatar_url": avatar_path("telegram", "a.c2.900")}},
     ]
 
 
@@ -26189,6 +26259,7 @@ class H(BaseHTTPRequestHandler):
             transcription_socket(self, audio[1].lower())
             return
         if self.token_refused(): return
+        if DOMAINS.http(self, "GET", p): return  # the domains' routes first (scripts/mock/mock_domains.py)
         if CASE and case_route(self, "GET", p, q, b""): return
         if preview_route and preview_route(self, "GET", p, q): return
         if p == "/mock/ln":
@@ -26513,7 +26584,6 @@ class H(BaseHTTPRequestHandler):
         if p == "/mock/devices/retire":
             PUSH_RETIRED[0] = q.get("on", ["1"])[0] == "1"
             return self.send_json({"retired": PUSH_RETIRED[0]})
-        if p == "/mock/desktops": return self.send_json(desktops_state())
         if p == "/mock/hello": return self.send_json(HELLO)
         if p == "/mock/phone":
             with FAULT_LOCK:
@@ -26557,6 +26627,7 @@ class H(BaseHTTPRequestHandler):
             ARCHIVE_CLOSE["mode"] = q.get("close", [""])[0]
             return self.send_json({"close": ARCHIVE_CLOSE["mode"], "archived": [x["session_id"] for x in ARCHIVED_AGENTS]})
         if p == "/mock/reset":  # MachinePagesTests: each test starts from the same machines
+            DOMAINS.reset()
             BOTMUX_ON.clear()
             TAB_NAMES.clear()  # TerminalsRenameUITests: the tabs' own names again
             machine_alerts.reset()  # cleaned caches and launcher checks (#8037)
@@ -26963,6 +27034,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/v1/mail/messages": return self.send_json({"messages": [], "has_more": False})
         if p == "/api/v1/lark/unread-count": return self.send_json({"count": 4})
         if telegram_area(self, "GET", p, b""): return
+        if avatars_area(self, p): return
+        if telegram_avatars_area(self, "GET", p): return
         if larkcli_thread_area(self, "GET", p): return
         if plugin_connector_area(self, "GET", p, b""): return
         if triage_route(self, "GET", p, b""): return
@@ -27387,6 +27460,7 @@ class H(BaseHTTPRequestHandler):
             return self.upload()
         self.last_body = self.body()
         p = urlparse(self.path).path
+        if DOMAINS.http(self, self.command, p, self.last_body): return  # the domains' routes first
         if CASE and case_route(self, self.command, p, parse_qs(urlparse(self.path).query), self.last_body): return
         if preview_route and preview_route(self, self.command, p, parse_qs(urlparse(self.path).query)): return
         if custom_models_route(self, self.command, p, parse_qs(urlparse(self.path).query), self.last_body): return
@@ -29351,6 +29425,7 @@ class H(BaseHTTPRequestHandler):
             ws_token = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
         # A legacy fixture socket has no credential and keeps the mock's full-role default.
         client["role"] = PAIR_DEVICE_ROLES.get(ws_token, "full")
+        domain_socket = DOMAINS.socket(self.connection, send, client, asked)
         if MOCK_PAIR_TOKEN: print("mock: ws open host=%s token=%s" % (self.headers.get("Host"), ws_token[:9]), flush=True)
         if MOCK_PAIR_TOKEN and ws_token == MOCK_PAIR_TOKEN:
             def cut_after_grace():  # the hub cancels the pairing token's sockets once its grace is over
@@ -29439,6 +29514,8 @@ class H(BaseHTTPRequestHandler):
                 if op != 1: continue
                 msg = json.loads(payload or b"{}")
                 LOG.write("  WS %s\n" % msg.get("type")); LOG.flush()
+                if DOMAINS.ws_message(domain_socket, msg):
+                    continue
                 if msg.get("type") == "client_hello":
                     declared, requested = msg.get("features", []), msg.get("heartbeat")
                     if not isinstance(declared, list) or not all(isinstance(f, str) for f in declared):
@@ -29474,9 +29551,6 @@ class H(BaseHTTPRequestHandler):
                 if msg.get("type") == "register_phone":
                     with FAULT_LOCK:
                         PHONES[self.connection] = {"send": send, "registration": msg}
-                    continue
-                if msg.get("type") in ("register_desktop", "unregister_desktop"):
-                    desktop_registration(self.connection, msg)
                     continue
                 if msg.get("type") == "tool_result":
                     with FAULT_LOCK:
@@ -29650,7 +29724,7 @@ class H(BaseHTTPRequestHandler):
             CLIENTS.pop(self.connection, None)
             PHONES.pop(self.connection, None)
             FS_WATCHES.pop(self.connection, None)
-        desktop_registration(self.connection, None)
+        DOMAINS.ws_closed(domain_socket)
         LIVE[:] = [x for x in LIVE if x[0] is not send]
         self.close_connection = True
 
@@ -32362,44 +32436,6 @@ MOCK_HELP.append("MOCK_OUTSIDE_DIALOG=1  A Claude Code session in a plain termin
                  "can answer (#5890): a message to it answers {ok, waits_on_computer}")
 
 
-# Desktop client registration (hub/desktops.go): `register_desktop` on an app's socket, withdrawn by `unregister_desktop`
-# (a hub with the feature desktop_unregister) or by the socket closing. GET /mock/desktops says who is registered now and
-# what happened in order, for the desktop shell's smoke (desktop/scripts/e2e-main.mjs).
-DESKTOPS = {}  # socket -> device_name
-DESKTOP_LOG = []  # {"event": "register" | "unregister" | "close", "device_name"}
-DESKTOP_LOCK = threading.Lock()
-
-
-def desktop_registration(connection, msg):
-    """A socket's register_desktop / unregister_desktop message, or its close (msg None)."""
-    if msg is not None and CLIENTS.get(connection, {}).get("role") != "full":
-        return  # hub/desktops.go: an answer-only watch never becomes desktop presence.
-    with DESKTOP_LOCK:
-        if msg is not None and msg.get("type") == "register_desktop":
-            name = msg.get("device_name") if isinstance(msg.get("device_name"), str) else ""
-            DESKTOPS[connection] = name
-            DESKTOP_LOG.append({"event": "register", "device_name": name})
-        elif connection in DESKTOPS:  # a withdrawal only of a socket that registered
-            DESKTOP_LOG.append({"event": "unregister" if msg is not None else "close", "device_name": DESKTOPS.pop(connection)})
-
-
-def desktops_state():
-    with DESKTOP_LOCK:
-        return {"registered": sorted(DESKTOPS.values()), "log": list(DESKTOP_LOG)}
-
-
-_features_without_desktops = features
-
-
-def features():
-    return _features_without_desktops() + (["desktops", "desktop_unregister"] if os.environ.get("MOCK_DESKTOPS") == "1" else [])
-
-
-MOCK_HELP.append("MOCK_DESKTOPS=1  features list desktops and desktop_unregister, so a desktop client withdraws its registration with "
-                 "unregister_desktop instead of closing its socket (an older hub). Either way GET /mock/desktops says who is registered "
-                 "and the register / unregister / close events in order")
-
-
 _features_without_agent_archives = features
 
 
@@ -32554,6 +32590,20 @@ def mock_turn_usage(mode):
 
 if MOCK_TURN_USAGE in ("1", "multi", "unpriced"):
     mock_turn_usage(MOCK_TURN_USAGE)
+
+
+# ---------- the mock's domains (scripts/mock/mock_domains.py, docs/operations/testing.md "Mock hub domains") ----------
+# Each module in mock_domains.DOMAINS registers its routes, WebSocket messages, features, help lines and /mock/reset
+# hooks, and H consults them before its own; a new domain is a module and a line in that list, with no change here.
+# They load after every switch above, so a domain can read and extend those fixtures.
+import mock_domains  # noqa: E402
+DOMAINS = mock_domains.load(globals())
+MOCK_HELP.extend(DOMAINS.help_lines)
+_features_without_domains = features
+
+
+def features():
+    return DOMAINS.features(_features_without_domains())
 
 
 # MOCK_TODO_VIEW=1|old|late, MOCK_TODO_MANAGERS=2 (#10465, scripts/mock/todo_view_mock.py): the To-dos view, counts and

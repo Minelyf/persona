@@ -572,16 +572,30 @@ func (s *Service) retractSupervisedIdle(ctx context.Context, todoID string) bool
 }
 
 // toldStartUnknownIDs returns provisional starts whose confirmation receipt survived the old process. The caller
-// decides whether to reconcile only these durable receipts or add current exact creation ids too.
+// decides whether to reconcile only these durable receipts or add current exact creation ids too. Before the ledger's
+// first ordinary read, inspect its stored document without loading the book: loading also restores quiet-turn marks
+// and publishes their rows, while this recovery scan must not change that lazy projection's ordering.
 func (s *Service) toldStartUnknownIDs(ctx context.Context) ([]string, bool) {
 	turns := &s.tasks.turns
 	turns.mu.Lock()
 	defer turns.mu.Unlock()
-	if !s.turnsReadLocked(ctx) {
-		return nil, false
+	doc := turns.doc
+	if !turns.loaded {
+		st := s.store()
+		if st == nil {
+			return nil, true
+		}
+		found, err := st.Setting(ctx, taskTurnsKey, &doc)
+		if err != nil {
+			s.logf("task turns: %v", err)
+			return nil, false
+		}
+		if !found {
+			return nil, true
+		}
 	}
 	var ids []string
-	for id, entry := range turns.doc.Turns {
+	for id, entry := range doc.Turns {
 		if sig := entry.Signal; sig != nil && sig.Kind == sigUnjudged && sig.Key == "start-unknown@"+id && sig.Told != nil {
 			ids = append(ids, id)
 		}

@@ -14,10 +14,10 @@ import (
 
 // ---- what the task's events say ----
 
-// taskNotice is what happened to task t (state: done, needs, interrupted; ask, text as quietNotify has them):
-// a supervised task's supervisor gets a signal, any other quiet task's conversation its notice.
+// taskNotice is what happened to task t (state: done, needs, interrupted): a supervised task's supervisor gets a
+// signal, any other quiet task's conversation its notice.
 func (s *Service) taskNotice(ctx context.Context, t Todo, machine, state, ask, text string) {
-	s.taskNoticeOf(ctx, t, machine, state, ask, text, 0)
+	s.taskNoticeOf(ctx, t, machine, state, ask, text, 0, nil)
 }
 
 // taskStartFailed is taskNotice for task t's start that failed (reason) after start's retries (nil: none). Each
@@ -28,11 +28,12 @@ func (s *Service) taskStartFailed(ctx context.Context, t Todo, machine string, s
 	if start != nil {
 		attempt = start.Attempt
 	}
-	s.taskNoticeOf(ctx, t, machine, "failed", "", reason, attempt)
+	s.taskNoticeOf(ctx, t, machine, "failed", "", reason, attempt, nil)
 }
 
-// taskNoticeOf is taskNotice; attempt is a failed start's retries so far.
-func (s *Service) taskNoticeOf(ctx context.Context, t Todo, machine, state, ask, text string, attempt int) {
+// taskNoticeOf is taskNotice; attempt is a failed start's retries so far, and files what a done turn handed over to
+// its conversation's computer (task_files.go, #10511), which a notice lists outside its text's clip.
+func (s *Service) taskNoticeOf(ctx context.Context, t Todo, machine, state, ask, text string, attempt int, files []taskFile) {
 	// A reporting conversation keeps its own quiet notice even though main now supervises the task (#5732). Main's own
 	// quiet tasks use only the supervision digest, so they are not told twice.
 	if t.Quiet && t.Origin != "" {
@@ -40,7 +41,7 @@ func (s *Service) taskNoticeOf(ctx context.Context, t Todo, machine, state, ask,
 			if s.reporterStopped(ctx, t.Origin) {
 				return
 			}
-			s.quietNotify(ctx, t, machine, state, ask, text)
+			s.quietNotify(ctx, t, machine, state, ask, text, files)
 		}
 	}
 	if t.Supervision == nil {
@@ -50,7 +51,7 @@ func (s *Service) taskNoticeOf(ctx context.Context, t Todo, machine, state, ask,
 			}
 			return
 		}
-		s.quietNotify(ctx, t, machine, state, ask, text)
+		s.quietNotify(ctx, t, machine, state, ask, text, files)
 		return
 	}
 	if state == "failed" && !t.Quiet && t.Origin != "" && !s.isMain(ctx, t.Origin) && !s.isLeader(ctx, t.Origin) &&

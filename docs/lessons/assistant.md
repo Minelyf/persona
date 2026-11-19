@@ -700,6 +700,17 @@ Cleanup in `watchTurn` is too late when the production restart path drains an id
 ## Closing a task and recording delivery need one admission boundary (#5732)
 
 Checking `DoneAt` after a push returns, even again under `supervise.writeMu`, does not make a receipt atomic with `editTodo`: the user close does not take that mutex and can land after the guard but before the stored receipt. The guarded receipt must take `todos.writing` before `writeMu`, matching other todo writers, and hold it through the guard, database write and in-memory mirror. Close then either commits first and makes the guard refuse the receipt, or waits and commits after it. A regression needs a real store gate after the guard; closing while a notification RPC is in flight or merely clearing an earlier `writeMu` does not cover this interleaving.
+
+## Scheduled runs need observable to-do progress (#9755)
+
+- A successful scheduled run is not progress on its linked to-do (#9755). Compare transcript output, criterion
+  states and explicit progress-report content, not updated timestamps or the follow-up's own summary. Keep the
+  streak and baseline with the schedule, not only in capped shared history; test restart, history eviction,
+  replayed completions and failed persistence before emitting a supervisor signal or an owner decision. Keep the
+  first escalation attempt's identity across runs: its committed owner review repairs a lost final marker without
+  duplicating that decision or mistaking an unrelated owner question for its own.
+
+
 ## A stopped leader's own To-do does not list its workers (#8400)
 
 Workers planned by a task leader have separate To-dos: their `todo_agents.source` is `worker` and `via` is the leader's

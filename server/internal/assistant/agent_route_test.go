@@ -319,6 +319,18 @@ func (m *planMemStore) AppendFeed(_ context.Context, r db.FeedRow) error {
 	return nil
 }
 
+func (m *planMemStore) FeedItem(_ context.Context, id string) (*db.FeedRow, error) {
+	m.pmu.Lock()
+	defer m.pmu.Unlock()
+	for i := len(m.feed) - 1; i >= 0; i-- {
+		if m.feed[i].ID == id {
+			r := m.feed[i]
+			return &r, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *planMemStore) Feed(_ context.Context, conversation string, since time.Time, limit int) ([]db.FeedRow, error) {
 	m.pmu.Lock()
 	defer m.pmu.Unlock()

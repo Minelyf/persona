@@ -978,6 +978,28 @@ func (s *Service) superviseWatch(ctx context.Context, now time.Time) {
 	s.backfillBriefs(ctx, tasks)   // tasks from before briefs get one from what they still have (task_brief.go)
 	groups := allStoppedTaskGroups(tasks)
 	for _, t := range tasks {
+		if t.Supervision == nil && t.DoneAt == nil {
+			// A legacy completion judged while no main existed deliberately stayed unjudged. Once main is configured,
+			// recover that exact ledger turn instead of leaving it outside every future supervised sweep (#5732).
+			main := s.settings(ctx).Main
+			if main == "" {
+				continue
+			}
+			e, ok := s.turnOf(ctx, t.ID)
+			if !ok || e.State != turnDone || e.Judged != nil {
+				continue
+			}
+			if err := s.superviseTodo(ctx, t.ID, main, nil, 0); err != nil {
+				continue
+			}
+			current, ok := s.todoNow(t.ID)
+			if !ok || current.DoneAt != nil {
+				continue
+			}
+			t = current
+			s.watchTurn(ctx, t, s.taskAgentsIn(ctx, t, lists))
+			continue
+		}
 		if t.Supervision == nil || t.DoneAt != nil {
 			continue
 		}

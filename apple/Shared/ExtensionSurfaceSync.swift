@@ -29,7 +29,9 @@ nonisolated enum ExtensionSurfaceSync {
 
     /// Off the main thread: every step reads or rewrites the shared snapshot. A cancelled refresh (the app went to the
     /// background, #11360) stops before its next store write; a write already under way finishes inside its lease.
-    @concurrent static func refresh(store: ExtensionSurfaceStore = .shared) async {
+    static func refresh() async { await refresh(store: .shared) }
+
+    @concurrent static func refresh(store: ExtensionSurfaceStore) async {
         #if os(iOS) || os(watchOS) || os(visionOS)
         // Failure to enumerate means unknown, not empty: do not clear the hub's previous full report.
         let configurations = try? await ExtensionWidgetReconciliation.configurations()

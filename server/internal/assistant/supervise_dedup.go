@@ -22,7 +22,7 @@ type superviseFingerprint struct {
 	At        time.Time `json:"at"`
 	Key       string    `json:"key,omitempty"` // the stretch reserved by this fingerprint; empty before #5732
 	Permanent bool      `json:"permanent,omitempty"`
-	// Todo makes an all_stopped fingerprint last until its key changes or the task closes.
+	// Todo keeps inactivity and unhandled-event fingerprints until the task closes.
 	// Other non-permanent kinds retain the short semantic-deduplication window.
 	Todo string `json:"todo,omitempty"`
 }
@@ -30,6 +30,12 @@ type superviseFingerprint struct {
 func digestFingerprint(e prompts.SuperviseEntry, g superviseSignal) (string, string) {
 	if g.Kind == sigPRConflict || g.Kind == sigDraftPR {
 		// Keep every task/PR/head independently, including a head that returns after another one.
+		key, _ := json.Marshal([]string{g.Todo, g.Kind, g.Key})
+		sum := sha256.Sum256(key)
+		return string(key), hex.EncodeToString(sum[:])
+	}
+	if g.Kind == sigInbox && g.Inbox != nil && g.Inbox.ToAgent == "unhandled" {
+		// An unhandled source is not new when its recipient or last reply changes.
 		key, _ := json.Marshal([]string{g.Todo, g.Kind, g.Key})
 		sum := sha256.Sum256(key)
 		return string(key), hex.EncodeToString(sum[:])
@@ -156,6 +162,9 @@ func (s *Service) reserveSupervisionDelivery(ctx context.Context, entries []prom
 		if signals[i].Kind == sigAllStopped {
 			fingerprint.Todo = signals[i].Todo
 		}
+		if g := signals[i]; g.Kind == sigInbox && g.Inbox != nil && g.Inbox.ToAgent == "unhandled" {
+			fingerprint.Todo = g.Todo
+		}
 		next[key] = fingerprint
 		out, kept = append(out, entry), append(kept, signals[i])
 	}
@@ -187,8 +196,9 @@ func (s *Service) reserveSupervisionDelivery(ctx context.Context, entries []prom
 	}, nil
 }
 
-// ackSupervisionDedupLocked marks permanent PR-head reservations as delivered. An empty Key distinguishes a head told
-// for good from one whose process stopped after reservation but before delivery or queue admission (#5732). dedupMu is held by sendDigest.
+// ackSupervisionDedupLocked marks stable per-head and per-source reservations as delivered. An empty Key distinguishes
+// a delivered notification from one whose process stopped after reservation but before delivery or queue admission
+// (#5732). Other fingerprints depend on their rendered entry and are not recomputed here. dedupMu is held by sendDigest.
 func (s *Service) ackSupervisionDedupLocked(ctx context.Context, signals []superviseSignal) {
 	b := &s.supervise
 	history := b.dedup
@@ -202,11 +212,13 @@ func (s *Service) ackSupervisionDedupLocked(ctx context.Context, signals []super
 	next := maps.Clone(history)
 	changed := false
 	for _, g := range signals {
-		if g.Kind != sigPRConflict && g.Kind != sigDraftPR {
+		stable := g.Kind == sigPRConflict || g.Kind == sigDraftPR ||
+			g.Kind == sigInbox && g.Inbox != nil && g.Inbox.ToAgent == "unhandled"
+		if !stable {
 			continue
 		}
 		key, _ := digestFingerprint(prompts.SuperviseEntry{}, g)
-		if seen, ok := next[key]; ok && seen.Permanent && seen.Key != "" && seen.Key == g.Key {
+		if seen, ok := next[key]; ok && seen.Key != "" && seen.Key == g.Key {
 			seen.Key = ""
 			next[key] = seen
 			changed = true
@@ -261,7 +273,7 @@ func (s *Service) forgetSupervision(ctx context.Context, signals []superviseSign
 	b.dedup = next
 }
 
-// Inactivity fingerprints are bounded by open tasks, not elapsed time. Load once
+// Task-bound fingerprints are bounded by open tasks, not elapsed time. Load once
 // after restart; reservations keep the same cache current under dedupMu.
 func (s *Service) pruneAllStoppedDedup(ctx context.Context) {
 	b := &s.supervise

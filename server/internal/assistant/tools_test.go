@@ -343,7 +343,7 @@ func TestAgentStartConfirmationCleansOutboxWhenToldPredatesRestart(t *testing.T)
 	if err := s.linkTodoAgent(ctx, todo.ID, "box", "s1", todo.Title, "/code/app", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if !s.turnsTold(ctx, []superviseSignal{g}) {
+	if !s.turnsToldDurably(ctx, []superviseSignal{g}) {
 		t.Fatal("the crash-boundary fixture did not persist told")
 	}
 	// The process stopped after the ledger receipt but before the outbox cleanup. The exact link remains confirmed.
@@ -381,7 +381,7 @@ func TestSessionsChangedRetractsToldStartUnknownBeforeRelayDrain(t *testing.T) {
 		[]superviseSignal{g}, time.Now(), time.Time{}) {
 		t.Fatal("the unknown start was not admitted to the durable relay queue")
 	}
-	if !s.turnsTold(ctx, []superviseSignal{g}) {
+	if !s.turnsToldDurably(ctx, []superviseSignal{g}) {
 		t.Fatal("the crash-boundary fixture did not persist told")
 	}
 	simulateSupervisionRestart(t, s)
@@ -425,7 +425,7 @@ func TestSessionsChangedDoesNotDrainAfterARelayReadFailure(t *testing.T) {
 		[]superviseSignal{g}, time.Now(), time.Time{}) {
 		t.Fatal("the unknown start was not admitted to the durable relay queue")
 	}
-	if !s.turnsTold(ctx, []superviseSignal{g}) {
+	if !s.turnsToldDurably(ctx, []superviseSignal{g}) {
 		t.Fatal("the crash-boundary fixture did not persist told")
 	}
 	simulateSupervisionRestart(t, s)
@@ -478,7 +478,7 @@ func TestSessionsChangedRetractsToldOutboxBeforeDigest(t *testing.T) {
 	if got := storedSupervisePending(t, s)[g.id()]; got.Key != g.Key {
 		t.Fatalf("the outbox fixture was not persisted: %+v", got)
 	}
-	if !s.turnsTold(ctx, []superviseSignal{g}) {
+	if !s.turnsToldDurably(ctx, []superviseSignal{g}) {
 		t.Fatal("the crash-boundary fixture did not persist told")
 	}
 	simulateSupervisionRestart(t, s)
@@ -529,7 +529,7 @@ func TestRecoverTaskStartsRetractsToldOutboxBeforeDigest(t *testing.T) {
 	if got := storedSupervisePending(t, s)[g.id()]; got.Key != g.Key {
 		t.Fatalf("the outbox fixture was not persisted: %+v", got)
 	}
-	if !s.turnsTold(ctx, []superviseSignal{g}) {
+	if !s.turnsToldDurably(ctx, []superviseSignal{g}) {
 		t.Fatal("the crash-boundary fixture did not persist told")
 	}
 	simulateSupervisionRestart(t, s)

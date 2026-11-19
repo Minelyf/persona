@@ -381,6 +381,7 @@ The assistant and the L2 read-only connector are available; Inbox, knowledge bas
   `Risk: read / write / high-risk-write`. node asks once on first seeing a command (cached per command, about 50 ms):
   - `read` allowed directly; outside assistant bypass, `write`, `high-risk-write`, and unknown risk show a phone "Lark" card explaining actor (`--as bot`: "as the bot", otherwise "as you"), action (send, reply, react, recall…), and full command;
     high / unknown risk is separately marked. Denial returns user feedback; "Always allow in this session" remembers the command.
+  - A command lark-cli does not have runs without a card, so lark-cli itself answers "unknown subcommand" (#10845). lark-cli prints the parent group's help for it: no `Risk:` line, a `Usage:` naming exactly the command without its last word, and an `Available Commands:` list without that word; all three must hold. That answer is cached like a risk level. A command that exists but prints no `Risk:` line, and a lark-cli that cannot run or fails, still get the card (not cached).
   - Output-only allowed directly: `--help`, `--version`, `--dry-run`, `schema`, `skills`, `whoami`, `doctor`, `auth status / check / scopes / list`, `event list / schema / status`;
     `lark-cli api` uses HTTP methods: GET / HEAD allowed, other methods follow the permission mode and action classification (method, path, `--data` on a confirmation card).
   - For a gated message send or reply, the approval summary shows the conversation name (id when unavailable), the original sender and a short excerpt for a reply, topic status, and the outgoing text, rather than internal JSON fields such as `clientId` or `expectedSenderId`. `node/larkgate_card_context.go` reads that metadata with read-only Lark CLI calls (1.5 s per call); if it cannot be read, the old method / path / body summary is kept, and no gate decision changes (#5776).
@@ -937,7 +938,11 @@ before the next message, Claude Code thinks the window is exceeded and auto-comp
 
 ### Manual compaction (2026-11-04, #1727)
 
-User selects "Compact context" in main-chat menu: `POST /api/v1/assistant/conversations/{id}/compact` → node `assistant.compact` (`node/assistant_compact.go`).
+User selects "Compact context" in any open Assistant conversation's menu, including direction and other persistent side
+conversations: `POST /api/v1/assistant/conversations/{id}/compact` → node `assistant.compact` (`node/assistant_compact.go`).
+Web, iOS and Android offer it when the hub advertises `assistant_compact`; progress belongs to the conversation on
+screen. "Clear context" and "New main chat" remain main-only. This manual action does not change automatic compaction
+windows or any main-only automatic policy.
 
 - Same path as idle compaction: write `/compact` into an existing process, or start with `--resume` (chat's previous launcher / model); Codex uses `thread/compact/start`; runtime chats unsupported.
   A Codex Agent on an app-server takes the same call when sent `/compact` alone (#10188, [codex.md](../integrations/codex.md) "Sessions on the daemon (app-server route)").

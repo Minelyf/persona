@@ -239,7 +239,7 @@ func TestParkedTaskDoesNotReplayAnUntoldTurnSignal(t *testing.T) {
 			markLeaderTurnSignalled(t, s, g)
 			last := proto.Session{MachineID: "box", SessionID: "s1", Status: proto.StatusIdle, UpdatedAt: time.Now().UTC()}
 			s.tasks.turns.mu.Lock()
-			s.tasks.turns.looked[todo.ID] = lookOf(last) // only the ledger replay is under test, not another transcript read
+			s.tasks.turns.looked[turnRecoveryKey{Todo: todo.ID, Machine: last.MachineID, Session: last.SessionID}] = lookOf(last) // only the ledger replay is under test, not another transcript read
 			s.tasks.turns.mu.Unlock()
 			if parked {
 				_, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {

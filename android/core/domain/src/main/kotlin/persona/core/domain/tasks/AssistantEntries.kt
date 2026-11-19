@@ -219,7 +219,7 @@ fun assistantEntries(
                 val ended = todo.finishedAt(placed)
                 if ((placed.section == TriageSection.JustDone || placed.section == TriageSection.Done) &&
                     status != TriageStatus.Failed && !todo.origin.isNullOrBlank() && ended > 0 && now - ended < JUST_DONE_MS) {
-                    finished += FinishedEntry(todo, status, fresh = placed.section == TriageSection.JustDone, at = ended)
+                    finished += FinishedEntry(todo, status, fresh = todo.showsJustFinished(placed, now), at = ended)
                 }
                 continue
             }

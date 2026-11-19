@@ -299,7 +299,7 @@ nonisolated enum AssistantEntries {
             else if triage.section == .justDone || triage.section == .done, status != .failed, !(todo.origin ?? "").isEmpty {
                 let ended = TodoTriageLogic.finishedAt(todo, triage)
                 if ended > .distantPast, now.timeIntervalSince(ended) < TodoTriageLogic.justDone {
-                    finished.append(Finished(row: row, fresh: triage.section == .justDone, at: ended))
+                    finished.append(Finished(row: row, fresh: showsJustFinished(todo, triage, now: now), at: ended))
                 }
             }
         }

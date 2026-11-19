@@ -242,7 +242,7 @@ receipt, not delivery acceptance:
 The web's header reads "N open · N parked · N inactive · N done · N cancelled" beside the title on wider screens (a phone leaves it out); it counts what the list's filter shows, whatever is searched (#3740). The iOS and
 Android lists have no such line (#3712): it said again what the sections say, so each section's title carries the number of
 to-dos its rows list (a merged row's related ones too), in the section's state color, and the counts follow a search and the
-list's filter (#3740). **Open** counts to-dos that are not closed, not accepted or deployed,
+list's filter (#3740). **Open** counts to-dos that are not closed or accepted,
 and not shelved: Waiting on you, Working, Parked (including merge waits on the web), Other open, and Just finished rows still open (a finished turn
 is not a closed to-do; only a review or the user closes it). A supervised task, pending review or unaccepted `live` delivery
 stays open and awaiting review after Seen; an ordinary unsupervised finished turn files under Done once seen.

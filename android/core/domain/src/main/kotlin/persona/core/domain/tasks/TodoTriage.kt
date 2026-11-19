@@ -31,7 +31,7 @@ data class Triage(val section: TriageSection, val rule: TriageRule, val last: Lo
 
 /** No activity for this long, nothing of it running: shelved. */
 const val SHELVE_AFTER_MS: Long = 48 * 3_600_000L
-private const val JUST_DONE_MS: Long = 24 * 3_600_000L
+const val JUST_DONE_MS: Long = 24 * 3_600_000L
 private const val PR_STATUS_FRESH_MS: Long = 15 * 60_000L
 
 private fun ms(at: String?): Long = parseTime(at)?.toEpochMilli() ?: 0L
@@ -235,6 +235,7 @@ fun Todo.finishedAt(t: Triage): Long = when (t.rule) {
     TriageRule.Closed -> ms(doneAt)
     TriageRule.Accepted -> ms(supervision?.latestReview?.at)
     TriageRule.Deployed -> ms(delivery?.at).takeIf { it > 0 } ?: t.last
+    TriageRule.FinishedUnseen -> if (delivery?.state == "live") ms(delivery?.at).takeIf { it > 0 } ?: t.last else t.last
     TriageRule.Superseded -> ms(doneAt).takeIf { it > 0 } ?: t.last
     else -> t.last
 }

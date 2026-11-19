@@ -283,14 +283,14 @@ nonisolated enum TodoTriageLogic {
         case .closed: todo.doneAt ?? .distantPast
         case .accepted: todo.supervision?.latestReview?.at ?? .distantPast
         case .deployed: todo.delivery?.at ?? t.last
+        case .finishedUnseen: todo.delivery?.state == "live" ? (todo.delivery?.at ?? t.last) : t.last
         case .superseded: todo.doneAt ?? t.last
         default: t.last
         }
     }
 
-    /// Whether a to-do counts toward the header's open count: not closed, not accepted or deployed, not shelved. A
-    /// finished turn nobody looked at yet (Just finished, still open) counts: only a review or the user closes a to-do.
-    /// One the owner has seen since (rule 9a, in Done) does not.
+    /// Whether a to-do counts toward the header's open count: not closed, accepted or shelved. An unaccepted delivery
+    /// still counts after being seen; only an unsupervised finished turn can be filed by Seen (#5707, #5732).
     static func countsAsOpen(_ todo: TodoItem, _ t: TodoTriage) -> Bool {
         // a failed start has done_at too (the hub ends it), yet while it waits on the owner it is theirs to retry: open
         if t.rule == .failedStart { return t.section == .waiting }

@@ -316,14 +316,17 @@ func (n *Node) startCodex(ctx context.Context, launch host.Launcher, cwd, launch
 	defer n.unclaimCodexThread(id)
 	n.bindPane(pane, id)
 	n.namePersonaTab(ctx, pane, id) // the tab was marked before the thread was known (personatab.go)
-	st := sessionState{Pane: pane, Launcher: launcher, Cwd: cwd, StartedAt: began.UTC(), Model: execution.Model, ModelEffort: execution.Effort}
+	st := sessionState{Pane: pane, Launcher: launcher, Cwd: cwd, StartedAt: began.UTC(), Model: execution.Model, ModelEffort: execution.Effort, TaskInstructions: execution.TaskInstructions}
+	if st.TaskInstructions != "" && slices.Contains(argv, codexTaskConfig(st.TaskInstructions)) {
+		st.TaskInstructionChannel = "codex"
+	}
 	if mode == "plan" {
 		st.AppMode = mode
 	}
 	if legs, ok := engineHistoryOf(ctx); ok { // a switch from Claude Code starts it (engine_switch.go)
 		st.EngineHistory = legs
 	}
-	n.state.put(id, st)
+	n.putAgentState(ctx, launch, id, st)
 	_ = n.refreshHosts(ctx)
 	a, ok := n.agent(id)
 	if !ok {

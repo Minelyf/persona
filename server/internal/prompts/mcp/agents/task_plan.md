@@ -1,4 +1,10 @@
-Plan Agent work (code, repo research, or more than a few tool calls) instead of starting agents yourself: one task per independent piece. Check machines_list before choosing resources. Fill every field from the knowledge base, agents_list and user preferences; each choice is an editable chip with your one-line reason. Read-only tasks, tasks the user asked for themselves (user_requested), and kinds the user told you to start without asking, start at once; the rest wait as a card for the user's 开始. Returns immediately: carry on. Each queued task becomes a todo in your context snapshot; use agent_send to reach its Agent. Things a tool does for you (a reminder, an event) are not tasks. A task stays on its requested machine by default (machine_policy=fixed), including retries. An unavailable launcher fails there; do not reroute machine-local work. Use machine_policy=flexible only when the task may run on another computer: a failed health check can then move it, and its why says so. The response confirms queued dispatch, not an Agent start; check the task outcome. Main supervises and accepts every new task_plan task. Side conversations supply delivery evidence; main performs task_review and owner decisions. Only an explicitly assigned manual Agent stays with its leader. Legacy background tasks finish there; no new ones. Side conversations without supervision messages get a one-line completion notice and task link. The answer names the supervisor. The answer lists running work that looks like the same task: check it before letting both go on. A todo this conversation opened with no agent yet (a Lark topic's named in its hand-off, a todo_create part_of piece, or a failed start) is the task's own: give it as todo_id and no new todo is made; any other is refused with why. supervisor is a legacy direction label only; supervision stays with main. Every task gets a brief, kept from the moment it starts and never rewritten: the hub records the owner's message that led to it (their words, from this conversation; work you start on your own after a 督办 message, a notice or a routine is recorded as yours, with started_why), and you supply the goal, done_when, expect_minutes and out_of_bounds. A writable task (readonly false) without done_when (at least one checkable result) and expect_minutes is refused, and so is a read-only task without goal and expect_minutes; the refusal says what is missing. The card shows the brief, so the owner's 开始 confirms it. For rework, replacement, or a retry on another computer, give continues and continues_why; keep the original todo and brief, never split continuing work, even if dispatch fails. Retry a failed start with task_retry, also on another launcher. Start stops and releases prior Agents and reopens the same todo. Unreachable prior Agents, unauthorized takeovers, and open legacy successors block replacement. Apply owner-authorized scope changes with task_scope before planning and pass its scope_revision to reject staleness. Supply goal, authorization bounds, and new information; the manager appends effective criteria once. A task that changes files sets readonly false with explicitly authorized writable permission (for example, Codex bypassPermissions), which also lets a replacement Agent on the same todo implement fixes. A read-only Codex sandbox cannot be changed in place: use a fresh writable process; with no permission change, a plain agent_send follow-up to the live Agent is fine. A task that only reads sets readonly true; its first message includes the read-only constraint. Claude-family launchers use bypassPermissions for both read-only and writable tasks; Codex uses plan unless assistant.readonly_mode=prompt (normal runtime permissions, not a security boundary). pi, cursor and agy have no read-only mode and are refused in either setting. role "leader" makes the task's agent a task leader, which can hand direct workers to its own task through its own restricted task_plan and task_review and receives their supervision messages; use it only for a task that splits into several agents' work; any conversation may set it. Depth stops there: the leader's workers cannot hand tasks on.
+Use task_plan for code, repository research and work beyond a few tool calls. Make one task per independent piece. Check machines_list, then use the knowledge base, agents_list and user preferences to fill the editable choices and their one-line reasons. Read-only, user_requested and preapproved kinds start at once; other tasks wait for the owner’s 开始. A queued receipt is dispatch, so check the to-do outcome and reach its Agent via agent_send. Tool-owned reminders and events are separate.
+
+Default machine_policy=fixed keeps the machine on retries and refuses an unavailable launcher there. Use flexible only for portable work: a failed health check can move it and the reply explains why. Main supervises and accepts every new task_plan task; side conversations supply delivery evidence and receive a one-line completion notice and link. Only an explicitly assigned manual leader or a runtime conversation that advertises supervision_policy keeps its own supervision. Legacy background tasks finish there, with no new ones. If the caller cannot receive 督办, the compatible follow-up handles it. The supervisor input is only a legacy direction label saved for old-plan recognition; it does not move new supervision away from main. Check the returned supervisor and similar running work. Pass todo_id for the caller’s existing unassigned to-do, including a Lark topic, task split or failed start.
+
+Every started task keeps its original brief. The hub records the owner’s source message or records autonomous work as the caller’s with started_why. Give goal, done_when, expect_minutes and out_of_bounds. Writable work requires a checkable done_when and expect_minutes. Read-only work requires goal and expect_minutes. The card shows the brief for the owner’s confirmation. For rework, replacement or another computer give continues and continues_why. Use task_retry for a failed start, including another launcher. Apply owner-approved scope changes with task_scope and pass scope_revision. Give the goal, authorization bounds and new facts. The manager appends effective criteria.
+
+File changes need readonly=false and explicitly authorized write permission. Replace a read-only Codex process with a writable one for fixes. Use agent_send for live follow-up when permissions stay the same. readonly=true adds the read-only constraint to the assignment. Claude-family uses bypassPermissions for both. Codex uses plan unless assistant.readonly_mode=prompt (normal runtime permissions). pi, cursor and agy refuse readonly in either setting. Set role=leader only for a task that splits into direct workers, which it starts and reviews through restricted task_plan/task_review. Workers cannot delegate.
 
 When repository identity needs resolving, consult repositories_list, and repository_get only when useful. The user's explicit repository URL or path takes precedence. A saved binding is a reference, not authorization or an allowlist; never infer a machine or checkout path from it. Non-repository tasks need no lookup; retrieval is not a mandatory dispatch preflight. Closing the terminal on acceptance is the owner's Start choice; this tool cannot set it.
 
@@ -20,7 +26,7 @@ Workspace policy: "new" makes an isolated checkout; {"new":{"branch":"task/my-ch
     },
     "supervisor": {
       "type": "string",
-      "description": "main only: leader conversation id (assistant.leaders); it supervises; omit for no direction or your own work"
+      "description": "main only: current leader id (assistant.leaders), saved only as a legacy direction label; new tasks stay main-supervised"
     },
     "tasks": {
       "type": "array",
@@ -42,9 +48,10 @@ Workspace policy: "new" makes an isolated checkout; {"new":{"branch":"task/my-ch
             "type": "string",
             "description": "the task in a short line the user reads on the card (Chinese, under 20 characters)"
           },
+          "context": {"type": "string", "description": "facts the manager cannot resolve; omit project background"},
           "prompt": {
             "type": "string",
-            "description": "the agent's first message: everything it needs to do the task without asking you"
+            "description": "goal, bounds and new facts; the manager adds project context, criteria and framework rules once"
           },
           "machine": {
             "type": "string",
@@ -114,7 +121,7 @@ Workspace policy: "new" makes an isolated checkout; {"new":{"branch":"task/my-ch
             "items": {
               "type": "string"
             },
-            "description": "what done means: results you will check before you accept it (Chinese, one each), e.g. 「PR 合并到 master」「浅色 / 深色截图贴进 PR」「线上 hub 已部署并验证」; the agent is told them. Required for a writable task (at least one); with continues the earlier task's criteria apply and this is ignored"
+            "description": "what done means: results you will check before you accept it (Chinese, one each), e.g. 「PR 合并到 master」「浅色 / 深色截图贴进 PR」「线上 hub 已部署并验证」; the agent is told them. Required for a writable task (at least one); with continues the effective criteria from the original to-do apply and this is ignored"
           },
           "goal": {
             "type": "string",
@@ -130,15 +137,15 @@ Workspace policy: "new" makes an isolated checkout; {"new":{"branch":"task/my-ch
           },
           "continues": {
             "type": "string",
-            "description": "optional: the original todo id this task continues. Continuations always reuse this same todo and its unchanged brief and criteria; never split work to a new todo. At Start, stop/release still-active prior Agents and reopen this todo if closed. Refuse unauthorized takeovers, an unreachable prior Agent that cannot be stopped, and legacy open successor duplicates. Failed starts keep this todo. Needs continues_why; if no permission change is wanted, agent_send can follow up the same live Agent"
+            "description": "optional: the original todo id this task continues. Continuations always reuse this same todo and its original brief and effective criteria; never split work to a new todo. At Start, stop/release still-active prior Agents and reopen this todo if closed. Refuse unauthorized takeovers, an unreachable prior Agent that cannot be stopped, and legacy open successor duplicates. Failed starts keep this todo. Needs continues_why; if no permission change is wanted, agent_send can follow up the same live Agent"
+          },
+          "scope_revision": {
+            "type": "string",
+            "description": "with continues after a scope change: the exact scope_revision returned by task_scope; refuse planning if it is stale"
           },
           "continues_why": {
             "type": "string",
             "description": "with continues: one line on why the earlier task stopped or needs a replacement; kept on this continuation's plan"
-          },
-          "scope_revision": {
-            "type": "string",
-            "description": "with continues after task_scope: the exact scope_revision returned by that change; a continuation planned against an older scope is refused so it can be planned again from the current brief"
           },
           "started_why": {
             "type": "string",

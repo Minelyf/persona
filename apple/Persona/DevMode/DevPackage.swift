@@ -216,12 +216,13 @@ nonisolated enum DevPackage {
         - `connections.json` (with the logs, when something was counted): the connection tally, one entry per ISO week \
         in UTC (`week`, its Monday `starts`), the last 8 kept. An open is one period with the app in front per hub group, \
         from the moment the phone had a network path (Demo Mode left out); a period already under way when recording was \
-        turned on is not counted. `recorded_seconds`: seconds in front with recording on that week (0 or missing: \
+        turned on is not counted, nor one that ended with the app in front (a crash or a kill). `recorded_seconds`: seconds in front with recording on that week (0 or missing: \
         nothing was recorded, not "no failures"). `not_connected`: opens whose socket never connected, by the most \
         telling outcome its addresses had (`not_your_hub`: an added address answered as another hub; \
         `certificate_not_trusted`: TLS failed the system's trust; `couldnt_connect`: refused, timed out, not found, \
         lost, or not a healthy hub answer; `unknown`: cut short, or the period ended before any try failed). \
-        `connected`: opens that connected, by the address in use: `trust` (`system` for HTTPS, `plain_http`), \
+        `connected`: opens that connected, by the address in use: `trust` (`system`: HTTPS straight to it; \
+        `plain_http`: plain HTTP straight to it; `tunnel`: through a tunnel or proxy, plain HTTP to its loopback end), \
         `access_token` (it carries its own Cloudflare Access token), `route` (`direct`, `ssh_tunnel`, `in_app_tunnel`, \
         `local_proxy`), `address` (`paired`, `added`, `mesh`), `hello_fingerprint` (the hub's hello lists a key \
         fingerprint for itself) and `opens`. No address, host, port, hub id or fingerprint is in it.

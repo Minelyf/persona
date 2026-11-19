@@ -180,6 +180,9 @@ nonisolated struct ConnectionOpens: Sendable {
     private var pathUp = false
     private var groups: Set<String> = []
     private var opens: [String: Open] = [:]
+    /// The groups whose socket is connected now, and how, kept across periods: a socket that came up in the background
+    /// (a silent push woke the app) and is still up when the app comes to the front sends no new hello.
+    private var live: [String: DevProbe.Connected] = [:]
 
     /// Recording starts: in front (`active`) at launch the period counts (`fresh`); turned on by hand it does not.
     mutating func start(active: Bool, fresh: Bool, at now: Date) {
@@ -222,27 +225,34 @@ nonisolated struct ConnectionOpens: Sendable {
         case .groups(let set):
             groups = set
             opens = opens.filter { set.contains($0.key) }
+            live = live.filter { set.contains($0.key) }
             begin(now)
-        case .tried(let group, let outcomes):
-            // A try without a network path says nothing about the hub, in an open or before one.
-            guard counting, pathUp else { return }
+        case .tried(let group, let outcomes, let since):
+            // A try without a network path says nothing about the hub, in an open or before one; an attempt that began
+            // before this period (the app left the front and came back while it ran) belongs to the period it began in.
+            guard counting, pathUp, let front = frontSince, since >= front else { return }
             open(group, now)
             opens[group]?.outcomes.formUnion(outcomes)
         case .connected(let group, let how):
+            live[group] = how
             // Connected: there is a network, whatever the path monitor said so far.
             guard counting else { return }
             open(group, now)
             if opens[group]?.connected == nil { opens[group]?.connected = how }
+        case .disconnected(let group):
+            live[group] = nil
         }
     }
 
     private mutating func open(_ group: String, _ now: Date) {
         groups.insert(group)
-        if opens[group] == nil { opens[group] = Open(began: now) }
+        if opens[group] == nil { opens[group] = Open(began: now, connected: live[group]) }
     }
 
+    /// Opens for the groups there are once the phone has a network path, and at once for those already connected (a
+    /// connected socket proves one): an open already connected counts as connected.
     private mutating func begin(_ now: Date) {
-        guard counting, pathUp else { return }
-        for g in groups where opens[g] == nil { opens[g] = Open(began: now) }
+        guard counting else { return }
+        for g in (pathUp ? groups : []).union(live.keys) where opens[g] == nil { opens[g] = Open(began: now, connected: live[g]) }
     }
 }

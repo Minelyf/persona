@@ -110,6 +110,7 @@ extension AppModel {
     /// when one of its addresses answers (the tunnels close), else through a tunnel; tunnels set to be used every time
     /// first. Nothing answering at all: the first address, for the socket's own retries.
     func tunnelRoute(_ group: String) async -> ServerConfig? {
+        let attemptStart = Date() // what its direct check learns after the app went to the background was cut short
         let candidates = HubRoute.candidates(registry, group: group)
         let tunnels = hubTunnels(group)
         let options = tunnels.map { HubWay.Option(always: $0.always, recent: $0.recent) }
@@ -130,9 +131,8 @@ extension AppModel {
                     }
                     return tried
                 }
-                let start = Date()
                 let asked = await HubRoute.answeringTried(candidates)
-                tried(group, asked.tried, since: start)
+                attemptTried(group, asked.tried, since: attemptStart)
                 direct = asked.winner
                 seen.direct = direct != nil
                 if let tried = await warming?.value { seen.opened.merge(tried) { $1 } }

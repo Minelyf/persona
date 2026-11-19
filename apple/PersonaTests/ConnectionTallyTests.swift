@@ -44,7 +44,7 @@ struct ConnectionTallyTests {
         let r = recorder(dir, clock)
         r.path(wifi)
         r.link(.groups(["g"]))
-        r.link(.tried(group: "g", [.unreachable]))
+        r.link(.tried(group: "g", [.unreachable], since: clock.now))
         r.link(.connected(group: "g", direct))
         r.lifecycle(active: true, device: .init())
         clock.advance(60)
@@ -62,17 +62,17 @@ struct ConnectionTallyTests {
         r.start(active: true, page: "assistant", device: .init()) // at launch: this period counts
         r.path(wifi)
         r.link(.groups(["home", "work", "lab"]))
-        r.link(.tried(group: "home", [.answers, .unknown]))
+        r.link(.tried(group: "home", [.answers, .unknown], since: clock.now))
         r.link(.connected(group: "home", direct))
         r.link(.connected(group: "home", tunneled)) // a reconnect in the same open: counted once, as first connected
-        r.link(.tried(group: "work", [.unreachable, .untrusted]))
-        r.link(.tried(group: "work", [.unreachable]))
+        r.link(.tried(group: "work", [.unreachable, .untrusted], since: clock.now))
+        r.link(.tried(group: "work", [.unreachable], since: clock.now))
         clock.advance(90)
         r.lifecycle(active: false, device: .init())
         // Next period: the lab's socket never finished a try (unknown), work's added address answered as another hub.
         clock.advance(600)
         r.lifecycle(active: true, device: .init())
-        r.link(.tried(group: "work", [.notYourHub, .unreachable]))
+        r.link(.tried(group: "work", [.notYourHub, .unreachable], since: clock.now))
         r.link(.connected(group: "home", tunneled))
         clock.advance(30)
         r.lifecycle(active: false, device: .init())
@@ -97,7 +97,7 @@ struct ConnectionTallyTests {
         r.start(active: true, page: "assistant", device: .init())
         r.path(wifi)
         r.link(.groups(["g"]))
-        r.link(.tried(group: "g", [.answers])) // the probe answered, the socket had not connected yet
+        r.link(.tried(group: "g", [.answers], since: clock.now)) // the probe answered, the socket had not connected yet
         clock.advance(2)
         r.lifecycle(active: false, device: .init())
         r.settle()
@@ -114,20 +114,20 @@ struct ConnectionTallyTests {
         r.start(active: true, page: "settings", device: .init(), fresh: false)
         r.path(wifi)
         r.link(.groups(["g"]))
-        r.link(.tried(group: "g", [.unreachable]))
+        r.link(.tried(group: "g", [.unreachable], since: clock.now))
         clock.advance(10)
         r.lifecycle(active: false, device: .init())
         // The next period, without a network path: tries fail for want of a network, not the hub.
         r.path(.init(type: "none"))
         r.lifecycle(active: true, device: .init())
-        r.link(.tried(group: "g", [.unreachable]))
+        r.link(.tried(group: "g", [.unreachable], since: clock.now))
         clock.advance(10)
         r.lifecycle(active: false, device: .init())
         // The third: the network goes away during the open; the tries after that say nothing about the hub.
         r.lifecycle(active: true, device: .init())
         r.path(wifi)
         r.path(.init(type: "none"))
-        r.link(.tried(group: "g", [.unreachable]))
+        r.link(.tried(group: "g", [.unreachable], since: clock.now))
         clock.advance(5)
         r.lifecycle(active: false, device: .init())
         r.settle()
@@ -135,6 +135,70 @@ struct ConnectionTallyTests {
         #expect(week.recordedSeconds == 15) // the second and third periods were in front
         #expect(week.notConnected == ["not_your_hub": 0, "certificate_not_trusted": 0, "couldnt_connect": 0, "unknown": 1])
         #expect(week.connected.isEmpty)
+    }
+
+    /// The socket came up in the background (a silent push woke the app) and is still up when the user opens it: no
+    /// new hello comes, and the open counts as connected all the same.
+    @Test func aSocketAlreadyUpWhenThePeriodBeginsCountsAsConnected() throws {
+        let dir = scratch(), clock = Clock(Self.monday)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = recorder(dir, clock)
+        r.start(active: false, page: "assistant", device: .init()) // launched in the background
+        r.path(wifi)
+        r.link(.groups(["home", "work"]))
+        r.link(.connected(group: "home", direct)) // the wake's socket, while nothing is counted
+        r.link(.connected(group: "work", tunneled))
+        r.link(.disconnected(group: "work")) // work's closed again before the app is opened
+        clock.advance(10)
+        r.lifecycle(active: true, device: .init())
+        clock.advance(20)
+        r.lifecycle(active: false, device: .init())
+        r.settle()
+        let week = try #require(r.store.connectionTally(now: clock.now).weeks.only)
+        #expect(week.connected.only?.route == "direct" && week.connected.only?.opens == 1)
+        #expect(week.notConnected["unknown"] == 1) // work
+    }
+
+    /// An attempt that began before the app left the front and reports after it came back (a quick flip) belongs to
+    /// the period it began in, not the new one.
+    @Test func triesFromAnAttemptBeforeThePeriodAreLeftOut() throws {
+        let dir = scratch(), clock = Clock(Self.monday)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = recorder(dir, clock)
+        r.start(active: true, page: "assistant", device: .init())
+        r.path(wifi)
+        r.link(.groups(["g"]))
+        let began = clock.now
+        clock.advance(1)
+        r.lifecycle(active: false, device: .init())
+        clock.advance(1)
+        r.lifecycle(active: true, device: .init())
+        r.link(.tried(group: "g", [.untrusted, .unreachable], since: began)) // the old attempt ends now
+        r.link(.tried(group: "g", [.unreachable], since: clock.now)) // the new period's own attempt
+        clock.advance(5)
+        r.lifecycle(active: false, device: .init())
+        r.settle()
+        let week = try #require(r.store.connectionTally(now: clock.now).weeks.only)
+        #expect(week.notConnected == ["not_your_hub": 0, "certificate_not_trusted": 0, "couldnt_connect": 1, "unknown": 1])
+    }
+
+    /// An open that begins before Monday 00:00 UTC and ends after it counts in the week it began; its time is split.
+    @Test func anOpenCountsInTheWeekItBegan() throws {
+        let dir = scratch(), clock = Clock(Self.monday.addingTimeInterval(-60)) // Sunday 23:59 UTC, 2027-W01
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = recorder(dir, clock)
+        r.start(active: true, page: "assistant", device: .init())
+        r.path(wifi)
+        r.link(.groups(["g"]))
+        r.link(.tried(group: "g", [.unreachable], since: clock.now))
+        clock.advance(120) // Monday 00:01 UTC, 2027-W02
+        r.lifecycle(active: false, device: .init())
+        r.settle()
+        let weeks = r.store.connectionTally(now: clock.now).weeks
+        #expect(weeks.map(\.week) == ["2027-W01", "2027-W02"])
+        #expect(weeks.first?.notConnected["couldnt_connect"] == 1)
+        #expect(weeks.last?.notConnected.values.reduce(0, +) == 0)
+        #expect(weeks.map(\.recordedSeconds) == [60, 60])
     }
 
     @Test func weeksOlderThanEightAreDropped() {
@@ -170,7 +234,7 @@ struct ConnectionTallyTests {
         r.path(wifi)
         // Group ids are the app's own; nothing the hub or the user named reaches the recorder.
         r.link(.groups(["g1a2b3c4d"]))
-        r.link(.tried(group: "g1a2b3c4d", [.notYourHub, .untrusted, .unreachable, .unknown, .answers]))
+        r.link(.tried(group: "g1a2b3c4d", [.notYourHub, .untrusted, .unreachable, .unknown, .answers], since: clock.now))
         r.link(.connected(group: "g1a2b3c4d", tunneled))
         clock.advance(5)
         r.lifecycle(active: false, device: .init())

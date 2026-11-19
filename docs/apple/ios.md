@@ -2391,7 +2391,7 @@ Like Telegram: network trouble shows no banner; **the page title becomes "small 
 - **Addresses in Connection Details** (#11390): under the explanation and its lines, **Addresses** lists one line per address the app tries for the
   hub-level group, in the order tried (`HubRoute.candidates`: the center first, a hub's paired address before its added ones, then the addresses only the
   mesh lists). Each line is the address, then what its last try came to as a `Chip` (**Answers**, **Certificate Not Trusted**, **Not Your Hub**,
-  **Couldn't Connect**, **Unknown**) and "Tried at <time>"; the address the socket is on says **In Use** (an outline `Chip`, as Settings › hub › Addresses),
+  **Couldn't Connect**, **Unknown**) and the time of the last try, bare beside it (VoiceOver says "Tried at <time>"); the address the socket is on says **In Use** (an outline `Chip`, as Settings › hub › Addresses),
   and one not tried yet in this launch says "Not tried yet". What each word means, and where it comes from: `docs/operations/network.md` ("Client-added candidates", iOS).
   The outcomes come only from tries the app makes anyway (no probe, timer or polling of its own) and are kept in memory (`HubAddressBoard`, `apple/Persona/App/HubAddressBoard.swift`);
   the lines are worked out when a try ends, not in the details' `body`, which runs every second, and are drawn by their own view (`ConnectionAddresses`) with the address as their id.

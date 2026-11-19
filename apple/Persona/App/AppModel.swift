@@ -969,7 +969,10 @@ final class AppModel {
         link.live.onEvent = { [weak self] ev in self?.handle(ev.stamped(group), group: group) }
         link.live.prepareEvent = { Self.prepare($0) }
         link.live.onConnected = { [weak self] in self?.didConnect(group) }
-        link.live.onChange = { [weak self] in self?.connection.update() }
+        link.live.onChange = { [weak self] in
+            self?.connection.update()
+            self?.socketChanged(group)
+        }
         link.live.onAttempt = { [weak self] config, outcome in self?.socketTried(group, config, outcome) }
         link.live.credential = { [weak self] config in DeviceCredentialTrade.current(config, traded: self?.tradedTokens ?? [:]) }
         #if DEBUG

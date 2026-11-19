@@ -89,8 +89,10 @@ switch off is asked in #11400 and not done.
 
 - **An open** is one period with the app in front, per hub group (Demo Mode left out), from the moment the phone has a
   network path; it ends when the app leaves the front. Tries made while the phone has no network path are left out (they
-  say nothing about the hub). A period already under way when the switch is turned on is not counted (what happened
-  before is not known): counting starts with the next one, or at launch with the switch on.
+  say nothing about the hub), and so are the tries of an attempt that began before the period (the app left the front
+  and came back while it ran). An open whose socket is already connected when it begins (it came up in the background
+  for a silent push and is still up) counts as connected. A period already under way when the switch is turned on is
+  not counted (what happened before is not known): counting starts with the next one, or at launch with the switch on.
 - **A week** is an ISO week in UTC (`2026-W47`, starting Monday 00:00 UTC). An open counts in the week it began.
 - **What decides an open**: what the group's tries came to while it lasted, from the attempts the app makes anyway (the
   route picker's probes, a tunnel's check of the direct way, the recheck of preferred addresses, and for a group with one
@@ -109,7 +111,7 @@ switch off is asked in #11400 and not done.
 | `not_connected.couldnt_connect` | Opens that never connected, where the most telling outcome was Couldn't connect (refused, timed out, not found, lost, not a healthy hub answer). |
 | `not_connected.unknown` | Opens that never connected with nothing more telling: tries cut short, or the period ended before any try failed (a probe that answered while the socket had not connected yet counts here). |
 | `connected[]` | Opens whose socket connected, one entry per way, counted once by the first connect of the open; `opens` is how many. |
-| `connected[].trust` | What vouched for the address in use: `system` (HTTPS checked against the system's trust) or `plain_http`. |
+| `connected[].trust` | What vouched for the connection: `system` (HTTPS straight to the address in use, checked against the system's trust), `plain_http` (plain HTTP straight to it), or `tunnel` (through an SSH tunnel, the in-app tunnel or a local proxy, whose loopback end the socket reaches in plain HTTP: no TLS to the hub is checked by the app). |
 | `connected[].access_token` | The address in use carries its own Cloudflare Access service token (`ServerConfig.access`). |
 | `connected[].route` | `direct`, `ssh_tunnel`, `in_app_tunnel` or `local_proxy`: how the socket went. |
 | `connected[].address` | `paired`, `added` (Settings › hub › Addresses) or `mesh` (only the group's hellos listed it). |
@@ -120,7 +122,8 @@ hub machine itself was down is not told apart (that needs a hub-side field).
 
 - **Kept** in `Application Support/dev-mode/connections.json`: this week and the seven before it, written off the main
   actor on the recorder's queue when a period in front ends (the period during an export is in the next one), never in
-  `UserDefaults`. Turning the switch off deletes it with the rest.
+  `UserDefaults`. A period that ends with the app still in front (it crashed or was killed) is never written. Turning
+  the switch off deletes it with the rest.
 - **Never in it**: an address, host name, port, hub id, fingerprint or the group's own id; only fixed words, yes / no and
   counts (`ConnectionTallyTests`).
 - **Cost**: while off, `DevProbe.listening` is checked and nothing is worked out. While on, a few counters behind the

@@ -14,17 +14,21 @@ nonisolated enum DevProbe {
     enum Link: Sendable {
         /// The groups there are now (Demo Mode left out).
         case groups(Set<String>)
-        /// What one attempt's addresses came to, each once.
-        case tried(group: String, [HubOutcome])
+        /// What one attempt's addresses came to, each once; `since`: when the attempt began.
+        case tried(group: String, [HubOutcome], since: Date)
         /// The group's socket connected, and how (said once the hub's hello came).
         case connected(group: String, Connected)
+        /// The group's socket is no longer connected (it dropped, failed, or closed for the background).
+        case disconnected(group: String)
     }
 
     /// How a connected group reached its hub: only fixed words and yes / no, never an address, host, port, hub id or
     /// fingerprint.
     struct Connected: Hashable, Sendable {
-        /// What vouched for the address in use: the system's trust (HTTPS), or nothing (plain HTTP).
-        enum Trust: String, CaseIterable, Sendable { case system, plainHTTP = "plain_http" }
+        /// What vouched for the connection: the system's trust (HTTPS straight to the address in use), nothing (plain
+        /// HTTP straight to it), or the tunnel or proxy it went through (its loopback end is plain HTTP; no TLS to the
+        /// hub is checked by the app).
+        enum Trust: String, CaseIterable, Sendable { case system, plainHTTP = "plain_http", tunnel }
         /// The way the socket went: straight, or through the hub's SSH tunnel, its in-app tunnel or its local proxy.
         enum Route: String, CaseIterable, Sendable { case direct, sshTunnel = "ssh_tunnel", inAppTunnel = "in_app_tunnel", localProxy = "local_proxy" }
         /// Which address it is: the one paired, one the user added, or one only the mesh listed.

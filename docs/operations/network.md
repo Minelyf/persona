@@ -160,7 +160,8 @@ iOS implementation (#4670): Settings › hub › Addresses keeps a paired hub's 
     `hub_id` where one is expected, `ok` not true, Cloudflare Access answering, the socket turned down with 401).
   - **Unknown**: the probe was cut short (another address won and the rest were cancelled), or the app went to the background before it finished.
   - A group with one address and no tunnel is never probed: its outcome comes from the socket's own attempt, classified the same way. Otherwise the
-    probe says, and the socket replaces only an Answers at the address it then failed to open, so each attempt counts once per address. Connection
+    probe says, and the socket replaces only an Answers that the same attempt's own probe found at the address it then failed to open (through a
+    tunnel set to be used every time no probe runs, and the socket's failure is the tunnel's), so each attempt counts once per address. Connection
     Details lists the addresses with their outcomes (`docs/apple/ios.md`, "Connection status (slow / offline networks)"); Developing Persona counts
     opens by them weekly (`docs/operations/developing-persona.md`, "Connection tally (iOS)").
 - Not yet: the hub's own list (`/api/v1/endpoints`) does not feed this list, and the watch, widgets and other extensions keep the paired address.

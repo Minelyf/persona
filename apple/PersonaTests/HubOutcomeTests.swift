@@ -223,11 +223,115 @@ struct HubOutcomeTests {
         // The probe is the source: a socket failure where no probe said Answers changes nothing.
         model.socketTried("", b, .unreachable)
         #expect(model.addressBoard.outcome("", b.url) == nil)
-        let start = Date()
-        model.tried("", [.init(candidate: .init(config: b, hub: two.id, address: 1, hubID: "H"), outcome: .answers, at: Date())], since: start)
+        model.addressBoard.beginAttempt("")
+        model.attemptTried("", [.init(candidate: .init(config: b, hub: two.id, address: 1, hubID: "H"), outcome: .answers, at: Date())], since: Date())
         #expect(model.addressBoard.outcome("", b.url) == .answers)
         model.socketTried("", b, .answers) // connecting there says nothing new
         model.socketTried("", b, .unreachable) // the socket then failed there: that is what the attempt came to
         #expect(model.addressBoard.outcome("", b.url) == .unreachable)
+    }
+
+    /// A model with one hub "H": paired at `paired`, then `added`; built, not connected.
+    @MainActor private func model(paired: String, added: [String] = []) -> (AppModel, PairedHub) {
+        let model = AppModel(stateFolder: FileManager.default.temporaryDirectory.appending(path: "outcomes-" + UUID().uuidString))
+        var hub = PairedHub(config: ServerConfig(url: url(paired), token: "device"), group: "", hubID: "H")
+        hub.addresses = added.isEmpty ? nil : added.map { HubAddress(url: url($0)) }
+        model.registry = HubRegistry(hubs: [hub])
+        model.buildLinks()
+        return (model, hub)
+    }
+
+    /// Through a tunnel set to be used every time, an attempt asks no address: the socket's failure there is the
+    /// tunnel's, so it leaves the Answers an earlier attempt found at the paired address.
+    @MainActor @Test func aTunnelsSocketFailureLeavesAnOlderAnswers() {
+        let (model, hub) = model(paired: "https://a.invalid", added: ["https://b.invalid"])
+        let paired = HubRoute.Candidate(config: hub.config, hub: hub.id, address: 0)
+        model.addressBoard.beginAttempt("")
+        model.attemptTried("", [.init(candidate: paired, outcome: .answers, at: Date())], since: Date())
+        // The next attempt goes through the tunnel without asking the address; its socket fails.
+        model.addressBoard.beginAttempt("")
+        model.socketTried("", hub.config, .unreachable)
+        #expect(model.addressBoard.outcome("", hub.config.url) == .answers)
+        // An attempt that did ask it, and then failed to open the socket there: that is what it came to.
+        model.addressBoard.beginAttempt("")
+        model.attemptTried("", [.init(candidate: paired, outcome: .answers, at: Date())], since: Date())
+        model.socketTried("", hub.config, .unreachable)
+        #expect(model.addressBoard.outcome("", hub.config.url) == .unreachable)
+    }
+
+    /// The recheck of preferred addresses asks them in turn: one asked after the app went to the background, inside an
+    /// attempt that began in front, was cut short, never Couldn't Connect.
+    @MainActor @Test func probesStartedAfterTheBackgroundAreUnknown() async {
+        let (model, hub) = model(paired: "https://a.invalid", added: ["https://b.invalid", "https://c.invalid"])
+        let all = HubRoute.candidates(model.registry, group: "")
+        let first = all[0], second = all[1]
+        _ = await model.askPreferred("", [first, second]) { c in
+            // The background notice comes while the first is asked; the second starts after it.
+            if c == first { await MainActor.run { model.addressBoard.wentToBackground(at: Date()) } }
+            return .unreachable
+        }
+        #expect(model.addressBoard.outcome("", first.url) == .unknown)
+        #expect(model.addressBoard.outcome("", second.url) == .unknown)
+        #expect(hub.addresses?.count == 2)
+    }
+
+    /// Not your hub on a private address, through the probe race and the recheck: couldn't connect while a public
+    /// address is among those tried, not your hub when only private ones are.
+    @MainActor @Test func theRaceAndTheRecheckSettleAnotherHubOnAPrivateAddress() async {
+        URLProtocol.registerClass(OutcomeHealthProtocol.self)
+        let lan = candidate("https://\(OutcomeHealthProtocol.lan)"), pub = candidate("https://other.invalid", address: 2)
+        #expect(await HubRoute.healthCheck(lan) == .notYourHub) // what the LAN host itself answers
+        let mixed = await HubRoute.answeringTried([lan, pub])
+        #expect(mixed.winner == nil)
+        #expect(mixed.tried.map(\.outcome) == [.unreachable, .notYourHub])
+        let alone = await HubRoute.answeringTried([lan])
+        #expect(alone.tried.map(\.outcome) == [.notYourHub])
+        // The recheck settles each answer among all the group's addresses.
+        let (model, _) = model(paired: "https://here.invalid", added: ["https://\(OutcomeHealthProtocol.lan)", "https://other.invalid"])
+        let all = HubRoute.candidates(model.registry, group: "")
+        _ = await model.askPreferred("", [all[1], all[2]])
+        #expect(model.addressBoard.outcome("", all[1].url) == .unreachable)
+        #expect(model.addressBoard.outcome("", all[2].url) == .notYourHub)
+    }
+
+    /// The socket's own attempt reaches the lines through `LiveConnection.onAttempt`, as the app wires it: a refused
+    /// connection to a single address says Couldn't Connect.
+    @MainActor @Test func theSocketsOwnFailureReachesTheLines() async throws {
+        let (model, hub) = model(paired: "http://127.0.0.1:1")
+        let live = try #require(model.link("")?.live)
+        #expect(live.onAttempt != nil)
+        live.connect(hub.config)
+        defer { live.disconnect() }
+        let deadline = Date().addingTimeInterval(15)
+        while model.addressBoard.outcome("", hub.config.url) == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(model.addressBoard.outcome("", hub.config.url) == .unreachable)
+    }
+
+    /// How a connected socket got to its hub, in the tally's words.
+    @Test func connectedKindSaysHowTheSocketGotThere() {
+        var hub = PairedHub(config: ServerConfig(url: url("https://a.invalid"), token: "device"), group: "", hubID: "H")
+        hub.addresses = [HubAddress(url: url("https://b.invalid"), access: HubAccess(clientID: "id.access", clientSecret: "secret"))]
+        hub.mesh = [MeshHub(hubID: "H", isSelf: true), MeshHub(hubID: "M", endpoints: ["http://m.invalid:18660"])]
+        let registry = HubRegistry(hubs: [hub])
+        var hello = HubHello()
+        hello.hubID = "H"
+        let direct: (PairedHub) -> DevProbe.Connected.Route = { _ in .direct }
+        let paired = AppModel.connectedKind(on: hub.config, hello: hello, registry: registry, group: "", routed: direct)
+        #expect(paired == .init(trust: .system, accessToken: false, route: .direct, address: .paired, helloFingerprint: false))
+        let added = AppModel.connectedKind(on: hub.configs[1], hello: hello, registry: registry, group: "", routed: direct)
+        #expect(added == .init(trust: .system, accessToken: true, route: .direct, address: .added, helloFingerprint: false))
+        let mesh = AppModel.connectedKind(on: ServerConfig(url: url("http://m.invalid:18660"), token: "device"), hello: hello,
+                                          registry: registry, group: "", routed: direct)
+        #expect(mesh.address == .mesh && mesh.trust == .plainHTTP && mesh.route == .direct)
+        // Through a tunnel the socket speaks plain HTTP to its loopback end: the tunnel vouches, not the system's trust.
+        let tunneled = AppModel.connectedKind(on: hub.config, hello: hello, registry: registry, group: "") { _ in .sshTunnel }
+        #expect(tunneled.trust == .tunnel && tunneled.route == .sshTunnel && tunneled.address == .paired)
+        // The fingerprint the hello lists for the hub that sent it.
+        var fp = hub.mesh![0]
+        fp.fp = "fingerprint"
+        hello.mesh = [fp]
+        #expect(AppModel.connectedKind(on: hub.config, hello: hello, registry: registry, group: "", routed: direct).helloFingerprint)
     }
 }

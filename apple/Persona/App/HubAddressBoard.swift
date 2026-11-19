@@ -35,6 +35,9 @@ final class HubAddressBoard {
     /// When the app last went to the background (`AppModel.suspendLinks`): what an attempt learned after that while it
     /// was under way was cut short.
     @ObservationIgnored private(set) var lastBackground: Date?
+    /// The addresses the group's current socket attempt probed and found answering (`beginAttempt`): only there may
+    /// the socket's own failure replace an Answers, since only there did this attempt try the address itself.
+    @ObservationIgnored private var answeredNow: [String: Set<String>] = [:]
     #if DEBUG
     /// `-showConnectionAddresses YES`: made-up outcomes stay, real ones are not taken (screenshots).
     @ObservationIgnored private var seeded = false
@@ -75,6 +78,19 @@ final class HubAddressBoard {
     }
 
     func wentToBackground(at date: Date) { lastBackground = date }
+
+    /// One of the group's socket attempts begins (its route picker runs).
+    func beginAttempt(_ group: String) { answeredNow[group] = [] }
+
+    /// The current attempt's probes found these addresses answering.
+    func attemptAnswered(_ group: String, _ urls: [URL]) {
+        answeredNow[group, default: []].formUnion(urls.map(HubRoute.key))
+    }
+
+    /// Whether the current attempt's own probe found `url` answering; asked once, when the socket failed there.
+    func takeAnswered(_ group: String, _ url: URL) -> Bool {
+        answeredNow[group]?.remove(HubRoute.key(url)) != nil
+    }
 
     /// The outcomes of an attempt that began at `start`, with what came after the app went to the background in the
     /// meantime as unknown: that part of the attempt was cut short (#11390).

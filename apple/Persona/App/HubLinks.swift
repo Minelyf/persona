@@ -245,11 +245,12 @@ extension AppModel {
         guard tunneled || HubRoute.candidates(registry, group: group).count > 1 else { return nil }
         return { [weak self] in
             guard let self else { return nil }
+            self.addressBoard.beginAttempt(group)
             if !self.hubTunnels(group).isEmpty { return await self.tunnelRoute(group) }
             let candidates = HubRoute.candidates(self.registry, group: group)
             let start = Date()
             let (picked, tried) = await HubRoute.pickTried(candidates)
-            self.tried(group, tried, since: start)
+            self.attemptTried(group, tried, since: start)
             return picked?.config
         }
     }
@@ -341,10 +342,16 @@ extension AppModel {
     /// opens the socket anyway.
     private func preferredAnswers(_ group: String) async -> Bool {
         guard let link = link(group), !link.live.suspended else { return false }
+        return await askPreferred(group, preferred(group))
+    }
+
+    /// Asks `candidates` in turn until one answers, each try onto the group's lines and the tally.
+    func askPreferred(_ group: String, _ candidates: [HubRoute.Candidate], check: HubRoute.Check = HubRoute.healthCheck) async -> Bool {
         let all = HubRoute.candidates(registry, group: group)
-        for c in preferred(group) {
-            let start = Date()
-            let outcome = await HubRoute.healthCheck(c)
+        // One attempt: a probe that starts after the app went to the background was cut short like the rest.
+        let start = Date()
+        for c in candidates {
+            let outcome = await check(c)
             tried(group, HubRoute.settled([.init(candidate: c, outcome: outcome, at: Date())], among: all), since: start)
             if outcome == .answers { return true }
         }
@@ -386,7 +393,14 @@ extension AppModel {
         guard !tried.isEmpty, let link = link(group), !link.isDemo else { return }
         let tried = addressBoard.cutShort(tried, since: start)
         addressBoard.record(group, tried.map { ($0.candidate.url, $0.outcome, $0.at) })
-        if DevProbe.listening { DevProbe.link(.tried(group: group, tried.map(\.outcome))) }
+        if DevProbe.listening { DevProbe.link(.tried(group: group, tried.map(\.outcome), since: start)) }
+    }
+
+    /// `tried` for the probes of one of the group's socket attempts (its route picker): the addresses they found
+    /// answering are the ones where the socket's own failure may then say what the attempt came to.
+    func attemptTried(_ group: String, _ tried: [HubRoute.Tried], since start: Date) {
+        self.tried(group, tried, since: start)
+        addressBoard.attemptAnswered(group, addressBoard.cutShort(tried, since: start).filter { $0.outcome == .answers }.map(\.candidate.url))
     }
 
     /// What one of the group's socket attempts came to at the address it went to (`LiveConnection.onAttempt`). One
@@ -396,10 +410,20 @@ extension AppModel {
     func socketTried(_ group: String, _ config: ServerConfig, _ outcome: HubOutcome) {
         guard let link = link(group), !link.isDemo else { return }
         if link.live.route != nil {
-            guard outcome != .answers, addressBoard.outcome(group, config.url) == .answers else { return }
+            // Only where this attempt's own probe found the address answering: through a tunnel set to be used every
+            // time no probe runs, and the socket's failure there is the tunnel's, not the address's.
+            guard outcome != .answers, addressBoard.takeAnswered(group, config.url) else { return }
         }
-        addressBoard.record(group, [(config.url, outcome, Date())])
-        if DevProbe.listening { DevProbe.link(.tried(group: group, [outcome])) }
+        let now = Date()
+        addressBoard.record(group, [(config.url, outcome, now)])
+        if DevProbe.listening { DevProbe.link(.tried(group: group, [outcome], since: now)) }
+    }
+
+    /// The group's socket changed state (`LiveConnection.onChange`): not connected any more, for Developing Persona's
+    /// tally. Nothing while the switch is off.
+    func socketChanged(_ group: String) {
+        guard DevProbe.listening, let link = link(group), !link.isDemo, link.live.state != .connected else { return }
+        DevProbe.link(.disconnected(group: group))
     }
 
     /// Developing Persona's tally: the groups there are (Demo Mode left out). Nothing while the switch is off.
@@ -412,19 +436,28 @@ extension AppModel {
     /// address). Nothing while the switch is off.
     func reportConnected(_ hello: HubHello, group: String) {
         guard DevProbe.listening, let link = link(group), !link.isDemo, let on = link.live.currentConfig else { return }
+        DevProbe.link(.connected(group: group, Self.connectedKind(on: on, hello: hello, registry: registry, group: group) { hub in
+            if SSHTunnels.shared.routed.contains(hub.id) { return .sshTunnel }
+            if LocalProxies.shared.routed.contains(hub.id) { return .localProxy }
+            if InAppTunnels.shared.routed.contains(hub.id) { return .inAppTunnel }
+            return .direct
+        }))
+    }
+
+    /// How a group's socket on `on` got to its hub, as the tally words it: which address it is, the way it went
+    /// (`routed`: the paired hub's tunnel or proxy carrying it, if any), what vouched for it, whether that address
+    /// carries its own Access token, and whether the hello lists a key fingerprint for the hub that sent it.
+    nonisolated static func connectedKind(on: ServerConfig, hello: HubHello, registry: HubRegistry, group: String,
+                                          routed: (PairedHub) -> DevProbe.Connected.Route) -> DevProbe.Connected {
         let key = HubRoute.key(on.url)
         let candidate = HubRoute.candidates(registry, group: group).first { HubRoute.key($0.url) == key }
         let address: DevProbe.Connected.Address = candidate.map { $0.hub == nil ? .mesh : $0.address == 0 ? .paired : .added } ?? .paired
-        var route = DevProbe.Connected.Route.direct
-        if let hub = registry.members(group).first(where: { $0.configs.contains { HubRoute.key($0.url) == key } }) {
-            if SSHTunnels.shared.routed.contains(hub.id) { route = .sshTunnel }
-            else if LocalProxies.shared.routed.contains(hub.id) { route = .localProxy }
-            else if InAppTunnels.shared.routed.contains(hub.id) { route = .inAppTunnel }
-        }
+        let route = registry.members(group).first(where: { $0.configs.contains { HubRoute.key($0.url) == key } }).map(routed) ?? .direct
         let own = hello.mesh?.first { $0.isSelf == true } ?? hello.mesh?.first { $0.hubID == hello.hubID }
-        DevProbe.link(.connected(group: group, .init(trust: on.url.scheme?.lowercased() == "https" ? .system : .plainHTTP,
-                                                     accessToken: on.access != nil, route: route, address: address,
-                                                     helloFingerprint: own?.fp?.isEmpty == false)))
+        // Through a tunnel or proxy the socket goes to its loopback end in plain HTTP: the way vouches, not the system.
+        let trust: DevProbe.Connected.Trust = route != .direct ? .tunnel : on.url.scheme?.lowercased() == "https" ? .system : .plainHTTP
+        return .init(trust: trust, accessToken: on.access != nil, route: route, address: address,
+                     helloFingerprint: own?.fp?.isEmpty == false)
     }
 
     /// The SSH tunnels that go with group (#2379): each of its hubs may have one, kept under the hub's id.

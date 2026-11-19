@@ -249,7 +249,7 @@ func (s *Service) sendDigest(ctx context.Context) {
 // (dispatcherOf, #10126). "" when none of them can be told: it waits for a main conversation (#5420). With a main
 // conversation set it is never "", and nothing goes anywhere else than before.
 func (s *Service) routeTo(ctx context.Context, here Settings, g superviseSignal, there func(string) bool) string {
-	to := s.digestTo(ctx, here, g)
+	to := s.digestTarget(ctx, here, g)
 	if to != here.Main && !there(to) {
 		to = here.Main
 	}

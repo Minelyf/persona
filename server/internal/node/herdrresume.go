@@ -34,6 +34,7 @@ const resumeSource = "custom:persona"
 type agentLaunch struct {
 	Agent                            string // "claude" (empty means claude), "codex", "traex", "pi"
 	Launcher, Settings, Hooks, Model string
+	Effort                           string // a work agent's explicit effort, empty for its default
 	Display                          string // the live replies plugin's directory, "" for none (liveRepliesPlugin)
 	Plugins                          bool   // claude loads plugins: Persona's plugin directory and office rule
 	ID                               string
@@ -107,20 +108,34 @@ func resumeSayable(cmd string) bool {
 
 // agentResumeArgv is the resume_argv for an agent Persona started (Claude, Codex, a compatible CLI, pi, the Cursor
 // CLI, the Antigravity CLI). A Codex, and a work agent herdr detects, gets HERDR_AGENT like Claude. A work agent's
-// command is the one it was started with (`--model` included). Pi names its session, and agy adds a verified
-// conversation ID when available.
+// command keeps its model and effort overrides. Pi names its session, omp requires its session file, and agy adds a
+// verified conversation ID when available.
 func (n *Node) agentResumeArgv(spec agentLaunch, id string) (argv []string, ok bool) {
 	kind := spec.Agent
 	if kind == "" || kind == "claude" {
 		return n.claudeResumeArgv(spec, id)
 	}
+	if kind == ompAgent { // omp resumes a session file, never a pane or an id (ompresume.go)
+		file := n.ompKnownFile(id)
+		if file == "" {
+			return nil, false
+		}
+		cmd := n.launcherCommandQ(spec.Launcher, dquote) + " --resume " + dquote(file)
+		cmd = n.agentCommand(cmd, dquote, herdrPaneShell())
+		if !resumeSayable(cmd) {
+			return nil, false
+		}
+		return []string{"eval", cmd}, true
+	}
 	cmd := withHerdrAgent(resumeHerdrAgent(kind), n.launcherCommandQ(spec.Launcher, dquote)+" resume "+id)
 	if _, program, ok := workAgent(kind); ok {
+		launcher := spec.Launcher
 		resumeID := id
 		if kind == agyAgent {
+			launcher = n.launcherCommandQ(launcher, dquote)
 			resumeID = spec.AgyConversation
 		}
-		cmd = withHerdrAgent(resumeHerdrAgent(kind), workAgentResume(kind, workAgentCommand(spec.Launcher, program, spec.Model), resumeID))
+		cmd = withHerdrAgent(resumeHerdrAgent(kind), workAgentResume(kind, workAgentCommand(launcher, program, spec.Model, spec.Effort), resumeID))
 	}
 	cmd = n.agentCommand(cmd, dquote, herdrPaneShell())
 	if !resumeSayable(cmd) || (!validID(id) && !runtimeIDRe.MatchString(id)) {
@@ -188,7 +203,11 @@ func (n *Node) reportResume(ctx context.Context, h *herdrHost, pane string, spec
 	n.mu.Unlock()
 	argv, ok := n.agentResumeArgv(spec, spec.ID)
 	if !ok {
-		n.logf("herdr resume: %s (%s) not given a resume command (herdr would refuse it: an apostrophe, a control character or too long)", pane, spec.ID)
+		if spec.Agent == ompAgent && n.ompKnownFile(spec.ID) == "" {
+			n.logf("herdr resume: %s (%s) is an omp with no known session file: no resume command reported", pane, spec.ID)
+		} else {
+			n.logf("herdr resume: %s (%s) not given a resume command (herdr would refuse it: an apostrophe, a control character or too long)", pane, spec.ID)
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -298,7 +317,7 @@ func (n *Node) backfillResume(agents []host.Agent) {
 		if n.launches == nil {
 			n.launches = map[string]agentLaunch{}
 		}
-		n.launches[a.PaneID] = agentLaunch{Agent: kind, Launcher: st.Launcher, Model: st.Model, ID: id, AgyConversation: agy} // claimed: once
+		n.launches[a.PaneID] = agentLaunch{Agent: kind, Launcher: st.Launcher, Model: st.Model, Effort: st.ModelEffort, ID: id, AgyConversation: agy} // claimed: once
 		work = append(work, todo{a.PaneID, id, st, kind, agy})
 	}
 	n.mu.Unlock()
@@ -344,7 +363,7 @@ func (n *Node) backfillResume(agents []host.Agent) {
 				spec = agentLaunch{Agent: w.kind, Launcher: w.st.Launcher, Settings: settings, Hooks: hooks, Display: n.liveRepliesPlugin(hooks),
 					Model: w.st.Model, Plugins: n.claudeLoadsPlugins(ctx), ID: w.id}
 			} else {
-				spec = agentLaunch{Agent: w.kind, Launcher: w.st.Launcher, Model: w.st.Model, ID: w.id, AgyConversation: w.agy}
+				spec = agentLaunch{Agent: w.kind, Launcher: w.st.Launcher, Model: w.st.Model, Effort: w.st.ModelEffort, ID: w.id, AgyConversation: w.agy}
 			}
 			n.mu.Lock()
 			if cur, ok := n.launches[w.pane]; !ok || cur.ID != w.id || cur.AgyConversation != w.agy {

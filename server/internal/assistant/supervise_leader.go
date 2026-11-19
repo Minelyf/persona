@@ -51,26 +51,37 @@ func (s *Service) defaultPlanSupervisor(ctx context.Context, conversation, paren
 	return main, main != ""
 }
 
-// planTaskSupervisor resolves the reviewer before a plan starts. A runtime-backed conversation can dispatch work,
-// but new tasks still belong to main (#5732). If main itself cannot receive supervision policy, leave the plan open
-// for a compatible Claude Code or Codex reviewer instead of creating a legacy background route.
+// planTaskSupervisor resolves the reviewer before a plan starts. Ordinary new tasks stay with main (#5732). A runtime
+// side chat that explicitly supports supervision_policy can supervise its own plan; an incompatible one uses main's
+// durable ledger and the compatible delivery route rather than receiving a policy channel it would refuse.
 func (s *Service) planTaskSupervisor(ctx context.Context, conversation string, task PlanTask) (string, error) {
 	if task.Parent != "" {
 		return conversation, nil
 	}
+	cfg := s.settings(ctx)
 	supervisor, _ := s.defaultPlanSupervisor(ctx, conversation, "")
 	if supervisor == "" {
 		return "", nil
 	}
-	cfg := s.settings(ctx)
+	if conversation != cfg.Main {
+		if c, ok := s.session(ctx, cfg.MachineID, conversation); ok && c.Assistant && runtimeSessionSupportsSupervisionPolicy(c) && !s.isBackground(ctx, conversation) {
+			supervisor = conversation
+		}
+	}
 	machine := cfg.MachineID
 	if supervisor == cfg.Main {
 		machine = cfg.mainRouteMachine()
 	}
-	if s.runtimeConversation(ctx, machine, supervisor) {
-		return "", planInvalid{i18n.Err("assistant-conversations.supervision_reviewer_required")}
+	if !s.runtimeWithoutSupervisionPolicy(ctx, machine, supervisor) {
+		return supervisor, nil
 	}
-	return supervisor, nil
+	if !s.runtimeWithoutSupervisionPolicy(ctx, cfg.mainRouteMachine(), cfg.Main) {
+		return cfg.Main, nil
+	}
+	if background := s.runtimeSupervisorFallback(ctx, cfg); background != cfg.Main {
+		return cfg.Main, nil
+	}
+	return "", planInvalid{i18n.Err("assistant-conversations.supervision_reviewer_required")}
 }
 
 // legacyLeaderPlanSupervision reports whether t's saved pre-#5732 plan explicitly assigned its current leader.
@@ -283,8 +294,49 @@ func (s *Service) digestTo(ctx context.Context, cfg Settings, g superviseSignal)
 			}
 			return sup
 		}
+		// The explicit capable-runtime topology is the one side-chat exception to universal main supervision.
+		if sup != cfg.Main && sup == t.Origin && !s.isLeader(ctx, sup) && s.runtimeWithSupervisionPolicy(ctx, cfg.MachineID, sup) {
+			return sup
+		}
 	}
 	return cfg.Main
+}
+
+// runtimeSupervisorFallback is the existing background/main compatibility route for work whose runtime supervisor
+// cannot receive policy. It is not the supervisor for ordinary new tasks: ownSupervisor deliberately keeps those on main.
+func (s *Service) runtimeSupervisorFallback(ctx context.Context, cfg Settings) string {
+	if id := cfg.BackgroundSupervisor; s.backgroundOn(cfg) && id != "" && id != cfg.Main &&
+		cfg.BackgroundSupervisorMachineID == cfg.MachineID && !s.runtimeWithoutSupervisionPolicy(ctx, cfg.MachineID, id) {
+		return id
+	}
+	return cfg.Main
+}
+
+// digestRuntimeTarget applies the runtime policy boundary to a target chosen by digestTo or recheckDigestTo. A main
+// target moves to the compatibility route only for a task handed out by an incompatible runtime; ordinary main work
+// never inherits the legacy background route.
+func (s *Service) digestRuntimeTarget(ctx context.Context, cfg Settings, g superviseSignal, to string) string {
+	if to == "" || to == cfg.BackgroundSupervisor {
+		return to
+	}
+	runtimeOrigin := false
+	if t, ok := s.todoNow(g.Todo); ok {
+		runtimeOrigin = s.runtimeWithoutSupervisionPolicy(ctx, cfg.MachineID, t.Origin)
+	}
+	if to == cfg.Main && !runtimeOrigin {
+		return to
+	}
+	if to != cfg.Main && !s.runtimeWithoutSupervisionPolicy(ctx, cfg.MachineID, to) {
+		return to
+	}
+	own := s.runtimeSupervisorFallback(ctx, cfg)
+	s.logf("supervise: %s runs on a runtime that cannot take supervision policy: its signal goes to %s", short(to), short(own))
+	return own
+}
+
+// digestTarget is digestTo with the runtime policy boundary applied at delivery time.
+func (s *Service) digestTarget(ctx context.Context, cfg Settings, g superviseSignal) string {
+	return s.digestRuntimeTarget(ctx, cfg, g, s.digestTo(ctx, cfg, g))
 }
 
 // escalatedIn: one of the entries is a leader's needs_user.

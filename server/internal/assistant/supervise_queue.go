@@ -74,6 +74,12 @@ func (s *Service) recheckDigestTo(ctx context.Context, cfg Settings, g supervise
 	return lead
 }
 
+// recheckDigestTarget applies the same runtime policy boundary as an immediate delivery without discarding the
+// supervisor preserved by recheckDigestTo.
+func (s *Service) recheckDigestTarget(ctx context.Context, cfg Settings, g superviseSignal) string {
+	return s.digestRuntimeTarget(ctx, cfg, g, s.recheckDigestTo(ctx, cfg, g))
+}
+
 // Recheck structured queue entries at the last delivery boundary. Unknown task state keeps the original queue.
 // Legacy text-only entries retain their behavior; their task facts cannot safely be reconstructed from prose.
 func (s *Service) recheckQueuedDigest(ctx context.Context, to string, msg relayMsg) (relayMsg, bool, bool) {
@@ -106,7 +112,7 @@ func (s *Service) recheckQueuedDigest(ctx context.Context, to string, msg relayM
 			if _, handled, _ := s.leaderRoute(g); handled {
 				return msg, false, true
 			}
-			target := s.recheckDigestTo(ctx, here, g)
+			target := s.recheckDigestTarget(ctx, here, g)
 			if target == "" {
 				return msg, false, true
 			}

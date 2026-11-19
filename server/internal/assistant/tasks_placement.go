@@ -112,6 +112,7 @@ func (s *Service) fitTaskLauncher(ctx context.Context, t *PlanTask, m Device, ow
 	t.Launcher, _ = params["launcher"].(string)
 	t.Model, _ = params["model"].(string)
 	t.Effort, _ = params["effort"].(string)
+	t.Speed, _ = params["speed"].(string)
 	t.Tier = ""
 	t.noteWhy(note)
 	return agent, nil
@@ -180,6 +181,9 @@ func (s *Service) taskDirectoryExists(ctx context.Context, machine, dir string) 
 // and answers the machine's id and the session's: the machine it reached is the one the agent is linked to (looking it
 // up again after the start could find another, or none). A failed start counts against the launcher there.
 func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (mid, sid string, err error) {
+	if err := s.checkRequestStart(ctx, *t); err != nil {
+		return "", "", err
+	}
 	t.normalizeReadonlyPermission(readonlyModeOf(s.settings(ctx)))
 	if err := t.normalizeMachinePolicy(); err != nil {
 		return "", "", err
@@ -195,13 +199,13 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	// Every try starts from what the task named: what a policy filled in on an earlier try goes back first, whichever
 	// rule fits now (start_defaults.go), so a rule that changed or no longer fits leaves nothing of the earlier one.
 	if t.startFilled.any() {
-		t.Launcher, t.Model, t.Effort, t.Tier = caller.launcher, caller.model, caller.effort, caller.tier
+		t.Launcher, t.Model, t.Effort, t.Speed, t.Tier = caller.launcher, caller.model, caller.effort, caller.speed, caller.tier
 		t.Permission, t.Ultracode = caller.permission, copyBool(caller.ultracode)
 	}
 	t.startFilled = startFill{}
 	// A self-planning constraint applies only while a policy rule asks for it on this try.
 	t.planFirst = false
-	params := map[string]any{"launcher": t.Launcher, "model": t.Model, "effort": t.Effort, "tier": t.Tier}
+	params := map[string]any{"launcher": t.Launcher, "model": t.Model, "effort": t.Effort, "speed": t.Speed, "tier": t.Tier}
 	// The start-defaults policy: its preset goes in before the start is resolved, as if the task had named that tier;
 	// its effort and ultracode after the launcher fit, and the goal (a rule's or the Codex default) after that.
 	defaults, withDefaults := s.taskStartDefaults(ctx, t)
@@ -219,6 +223,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	t.Launcher, _ = params["launcher"].(string)
 	t.Model, _ = params["model"].(string)
 	t.Effort, _ = params["effort"].(string)
+	t.Speed, _ = params["speed"].(string)
 	s.healthyPlace(ctx, t)
 	m, ok := s.machineByName(ctx, t.Machine)
 	if !ok {
@@ -267,6 +272,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if err != nil {
 		return "", "", err
 	}
+	if err := checkStartSpeed(params, fit, ""); err != nil {
+		return "", "", err
+	}
 	if fit.allowAll() && !t.preservePermission {
 		t.Permission = "bypassPermissions"
 	}
@@ -293,6 +301,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 			})
 		}
 	}
+	if err := s.checkRequestStart(ctx, *t); err != nil {
+		return "", "", err
+	}
 	if err := s.admitTaskWorkspace(ctx, t); err != nil {
 		return "", "", err
 	}
@@ -310,7 +321,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		prompt += "\n\n" + prompts.RenderTaskContinuation(prompts.TaskContinuation{TodoID: t.Continues, Readonly: t.Readonly})
 	}
 	if t.Readonly {
-		prompt += "\n\n" + prompts.RenderReadonlyTaskConstraint()
+		prompt += "\n\n" + prompts.RenderReadonlyTaskConstraint(answerLanguage(s.hello(ctx).Locale))
 	}
 	if t.planFirst {
 		prompt += "\n\n" + prompts.RenderPlanFirstTaskConstraint()
@@ -352,7 +363,21 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if len(t.Attachments)+len(t.Mentioned) > 0 {
 		prompt = withAttachments(prompt, s.handAttachments(ctx, t.AttachFrom, m.ID, t.Attachments, t.Mentioned))
 	}
+	// A to-do's stored pictures go with every start for it, as they go with the app's manual handoffs (#11084).
+	// The node decodes them on this machine; any pictures the owner attached to this turn stay in the prompt too.
+	if t.TodoID != "" {
+		if current, ok := s.todoNow(t.TodoID); ok && len(current.Images) > 0 {
+			rows, err := s.todoImageContents(ctx, current)
+			if err != nil {
+				return "", "", err
+			}
+			params["images"] = todoProtoImages(rows)
+		}
+	}
 	params["cwd"], params["prompt"], params["tab_name"] = t.Cwd, prompt, s.tabName(ctx, t.Title)
+	if t.WaitInputID != "" {
+		params["client_msg_id"] = t.WaitInputID
+	}
 	if t.WorkspaceResolved != nil && t.WorkspaceResolved.WorkspaceID != "" {
 		params["workspace_id"] = t.WorkspaceResolved.WorkspaceID
 	}
@@ -399,8 +424,12 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		expectID = newStartSessionID()
 		params["session_id"] = expectID
 	}
+	clearStandardSpeed(params)
 	s.setPlanThen(ctx, m.ID, params)
 	if err := s.checkContinuationScope(t); err != nil {
+		return "", "", err
+	}
+	if err := s.checkRequestStart(ctx, *t); err != nil {
 		return "", "", err
 	}
 	sentAt := time.Now()
@@ -419,6 +448,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 			if err := s.checkContinuationScope(t); err != nil {
 				return "", "", err
 			}
+			if err := s.checkRequestStart(ctx, *t); err != nil {
+				return "", "", err
+			}
 			err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
 			continue
 		}
@@ -429,6 +461,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 			if err := s.checkContinuationScope(t); err != nil {
 				return "", "", err
 			}
+			if err := s.checkRequestStart(ctx, *t); err != nil {
+				return "", "", err
+			}
 			err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
 			continue
 		}
@@ -437,6 +472,17 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if err != nil {
 		s.recordStartFailure(ctx, m.ID, s.startLauncher(ctx, picked), err)
 		if startResultUnknown(err) {
+			if t.RequestGate != "" {
+				if expectID != "" {
+					lookup, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentStartListTimeout)
+					session, found := s.adoptStartedSession(lookup, m, s.startLauncher(ctx, picked), t.Cwd, expectID, nil)
+					cancel()
+					if found {
+						return m.ID, session.SessionID, nil
+					}
+				}
+				return "", "", err
+			}
 			// The node may still have built the tab and launched the agent. Ask the machine itself before this is
 			// called a failure: an adopted session returns through the normal success path, so the task is linked
 			// once, with no failure receipt, retry or reroute (and no duplicate agent on another computer, #6540).
@@ -572,7 +618,7 @@ func (s *Service) updatePlanTask(ctx context.Context, planID string, i int, t Pl
 		pt.Reroute, pt.Ultracode = t.Reroute, launch.ultracode
 		pt.Workspace, pt.WorkspaceResolved, pt.MachinePolicy = t.Workspace, t.WorkspaceResolved, t.MachinePolicy
 		pt.WorkspaceInferred, pt.ReservedTodoID = t.WorkspaceInferred, t.ReservedTodoID
-		pt.Launcher, pt.Model, pt.Effort, pt.Tier = launch.launcher, launch.model, launch.effort, launch.tier
+		pt.Launcher, pt.Model, pt.Effort, pt.Speed, pt.Tier = launch.launcher, launch.model, launch.effort, launch.speed, launch.tier
 		pt.Permission = launch.permission
 	}); err != nil {
 		s.logf("plan %s: %v", planID, err)

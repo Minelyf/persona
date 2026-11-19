@@ -12,14 +12,31 @@ import (
 // It is never read from RPC parameters or inferred from a model purpose supplied by a caller.
 type supervisionStartup struct{}
 
-// runtimeConversation reports a known session hosted by the runtime protocol, which has no separate policy channel.
+// runtimeSessionSupportsSupervisionPolicy reports an explicit capability, never an inference from a launcher name.
+func runtimeSessionSupportsSupervisionPolicy(c proto.Session) bool {
+	return c.SourceKind == proto.SourceRuntime && c.Capabilities != nil && c.Capabilities.SupervisionPolicy
+}
+
+// runtimeSessionLacksSupervisionPolicy reports a session hosted by the runtime protocol whose runtime has not
+// advertised supervision_policy support. Absent or unknown capability stays conservatively unsupported (#10338, #11173).
+func runtimeSessionLacksSupervisionPolicy(c proto.Session) bool {
+	return c.SourceKind == proto.SourceRuntime && !runtimeSessionSupportsSupervisionPolicy(c)
+}
+
+// runtimeWithSupervisionPolicy reports a known runtime session with an explicit separate policy channel.
+func (s *Service) runtimeWithSupervisionPolicy(ctx context.Context, machine, id string) bool {
+	c, ok := s.session(ctx, machine, id)
+	return ok && runtimeSessionSupportsSupervisionPolicy(c)
+}
+
+// runtimeWithoutSupervisionPolicy reports a known session hosted by a runtime that lacks a separate policy channel.
 // Launcher names and agent kinds alone do not identify that execution path.
-func (s *Service) runtimeConversation(ctx context.Context, machine, id string) bool {
+func (s *Service) runtimeWithoutSupervisionPolicy(ctx context.Context, machine, id string) bool {
 	if id == "" {
 		return false
 	}
 	c, ok := s.session(ctx, machine, id)
-	return ok && c.SourceKind == proto.SourceRuntime
+	return ok && runtimeSessionLacksSupervisionPolicy(c)
 }
 
 func (s *Service) supervisionInstructions(ctx context.Context, machine, id string) (string, error) {
@@ -36,7 +53,7 @@ func (s *Service) supervisionInstructions(ctx context.Context, machine, id strin
 		return "", nil
 	}
 	c, known := s.session(ctx, machine, id)
-	if known && c.SourceKind == proto.SourceRuntime {
+	if known && runtimeSessionLacksSupervisionPolicy(c) {
 		return "", nil
 	}
 	if !main && !(id == cfg.BackgroundSupervisor && cfg.BackgroundSupervisorMachineID == machine) && !slices.Contains(cfg.Leaders, id) {

@@ -209,16 +209,18 @@ to-do with priority `high`, still asks the owner with the card, as before.
 Seen (#5707) files an ordinary finished turn that has no supervising assistant and needs no acceptance. It is a reading
 receipt, not delivery acceptance:
 
-- **Got it** on an ordinary, unsupervised Delivered · awaiting review row (a small button at the end of its status line,
-  under the time, #6578, #7148; on iOS a compact accent `Chip` and a leading swipe action) marks it seen. On iOS the
-  chip shares the status line when it fits; otherwise `ViewThatFits` puts it at the right of the next line, with the
-  status's wrapping unchanged, through the xxxLarge interface-text cap (#6813). The row goes to Done at once, before
-  the hub answers; a toast says so with **Undo**, which takes the mark off. A failed write puts the row back and says
-  why. A supervised task or unaccepted delivery does not offer this action: Seen cannot accept it, so a button that
-  says it moved to Done would be false.
-- **Opening it** counts too: the iPhone and Android mark it seen when its page opens (the list behind has it in Done on
-  the way back); the web when the page leaves it (another to-do, the list, another page), so its row does not move while
-  it is read. Nothing is said about it. The Mac (frozen) does neither and files what another device marked.
+- **Got it** on an ordinary, unsupervised Just finished row (a small button at the end of its status line, under the time, #6578, #7148; on iOS
+  a compact accent `Chip` and a leading swipe action) marks it seen. On iOS the chip shares the status line when it fits;
+  otherwise `ViewThatFits` puts it at the right of the next line, with the status's wrapping unchanged, through the
+  xxxLarge interface-text cap (#6813). The row goes to Done at once, before the hub answers; a toast says so with
+  **Undo**, which takes the mark off. A failed write puts the row back and says why. A supervised task or unaccepted
+  delivery does not offer this action: Seen cannot accept it, so a button that says it moved to Done would be false.
+- **Opening it** counts too: the iPhone and Android mark it seen when its page opens (the list behind has it in Done on the way
+  back); the web when the page leaves it (another to-do, the list, another page), so its row does not move while it is
+  read. Nothing is said about it. The Mac (frozen) does neither and files what another device marked.
+- **In the Assistant's tray** (#10922) opening a row of its Finished entry marks the task seen on every client, and
+  the row stays there, as Done, until 24 hours after the task finished: seeing a task changes only whether it is new
+  (`docs/assistant/unified-entry.md` "Needs you and In progress").
 - The mark is the to-do's `seen_at` on the hub (`PUT` / `DELETE /api/v1/todos/{id}/seen`, feature `todo_seen`), so every
   device agrees. It is not activity: `updated_at` stays, so it neither shelves nor unshelves anything. A client of a hub
   without `todo_seen` offers neither.
@@ -240,13 +242,14 @@ receipt, not delivery acceptance:
 The web's header reads "N open · N parked · N inactive · N done · N cancelled" beside the title on wider screens (a phone leaves it out); it counts what the list's filter shows, whatever is searched (#3740). The iOS and
 Android lists have no such line (#3712): it said again what the sections say, so each section's title carries the number of
 to-dos its rows list (a merged row's related ones too), in the section's state color, and the counts follow a search and the
-list's filter (#3740). **Open** counts to-dos that are not closed, not accepted and not shelved: Waiting for you, Working,
-Parked (including merge waits on the web), Other open, and every unaccepted Delivered · awaiting review row, including `live` (a finished turn or delivery
-is not acceptance; only a review or the user closes it). An ordinary unsupervised finished turn files under Done once seen.
-**Parked**, **inactive**, **done** and **cancelled** count the to-dos in their respective sections, so the header and each
-section's title say the same number. **Done** counts non-cancelled closed and accepted ones plus those seen ordinary turns;
-**Cancelled** is always separate. The sidebar's To-dos badge shows the same open count without quiet tasks (#1731), as before;
-the page lists and counts them. A task whose agent never started (rule 1) counts as open while it waits on the owner.
+list's filter (#3740). **Open** counts to-dos that are not closed, not accepted or deployed,
+and not shelved: Waiting on you, Working, Parked (including merge waits on the web), Other open, and Just finished rows still open (a finished turn
+is not a closed to-do; only a review or the user closes it). A supervised task, pending review or unaccepted `live` delivery
+stays open and awaiting review after Seen; an ordinary unsupervised finished turn files under Done once seen.
+**Parked**, **inactive**, **done** and **cancelled** count the to-dos in their respective sections as their titles
+do (a merged row's related to-dos under the row's section), so the header and each section's title say the same number;
+what closed in the last 24 hours and was not seen yet is under Just finished and counted there, not as done. Cancelled
+is always separate from Done. The sidebar's To-dos badge (web, #11085) counts the open to-dos that need the owner, not those Agents are on, and never more than this open count: what waits on the owner (Waiting on you, or work held for their OK) counts, a to-do its own Agent is on (Working) or whose pieces Agents are doing does not, and the rest counts (`docs/assistant/todos.md`, "Sidebar and main navigation"). Quiet tasks (#1731) are left out of it as before; the page lists and counts them. iOS and Android still badge this open count. A task whose agent never started (rule 1) counts as open while it waits on the owner.
 
 The counts are the same whatever the list is grouped by (web audit item 12), and so is where each to-do is:
 

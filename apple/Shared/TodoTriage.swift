@@ -34,7 +34,7 @@ nonisolated enum TodoSection: String, CaseIterable, Sendable {
         switch self {
         case .waiting: StateName.needsYou.text
         case .working: StateName.working.text
-        case .justDone: String(localized: "Just Finished")
+        case .justDone: StateName.justFinished.text
         case .pr: String(localized: "PR to Merge")
         case .other: String(localized: "Other Open")
         case .shelved: String(localized: "Shelved")
@@ -274,8 +274,23 @@ nonisolated enum TodoTriageLogic {
         return at(.other, .rest)
     }
 
-    /// Whether a to-do counts toward the header's open count: not closed, accepted or shelved. An unaccepted delivery
-    /// still counts after being seen; only an unsupervised finished turn can be filed by Seen (#5707, #5732).
+    /// When a to-do the triage filed with the finished ones (Just Finished or Done) finished: the moment its rule reads
+    /// above — its close, its accepting review, its deploy — else its last move (a finished turn the owner has seen since).
+    /// The Assistant's Finished entry lists what finished less than `justDone` ago, seen or not (#10922; the web's
+    /// `finishedAt`). `distantPast` when nothing says.
+    static func finishedAt(_ todo: TodoItem, _ t: TodoTriage) -> Date {
+        switch t.rule {
+        case .closed: todo.doneAt ?? .distantPast
+        case .accepted: todo.supervision?.latestReview?.at ?? .distantPast
+        case .deployed: todo.delivery?.at ?? t.last
+        case .superseded: todo.doneAt ?? t.last
+        default: t.last
+        }
+    }
+
+    /// Whether a to-do counts toward the header's open count: not closed, not accepted or deployed, not shelved. A
+    /// finished turn nobody looked at yet (Just finished, still open) counts: only a review or the user closes a to-do.
+    /// One the owner has seen since (rule 9a, in Done) does not.
     static func countsAsOpen(_ todo: TodoItem, _ t: TodoTriage) -> Bool {
         // a failed start has done_at too (the hub ends it), yet while it waits on the owner it is theirs to retry: open
         if t.rule == .failedStart { return t.section == .waiting }

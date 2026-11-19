@@ -269,6 +269,10 @@ var rpcFailureKeys = map[string]string{
 	"assistant_service_tier_start_only":  "rpc-errors.assistant_service_tier_start_only",
 	"assistant_service_tier_unsupported": "rpc-errors.assistant_service_tier_unsupported",
 	"assistant_service_tier_refused":     "rpc-errors.assistant_service_tier_refused",
+	"agent_speed_unsupported":            "rpc-errors.agent_speed_unsupported",
+	"agent_speed_start_only":             "rpc-errors.agent_speed_start_only",
+	"agent_speed_model":                  "rpc-errors.agent_speed_model",
+	"agent_speed_invalid":                "rpc-errors.agent_speed_invalid",
 	"readonly_unsupported":               "rpc-errors.readonly_unsupported",
 	// a start whose engine runs only its own launchers and has none of the launcher's kind (#8140); the engine's own
 	// words, naming the launcher, stay in detail
@@ -315,9 +319,10 @@ var rpcFailureKeys = map[string]string{
 	"agent_stopped":      "rpc-errors.agent_stopped",
 	"resume_not_allowed": "rpc-errors.resume_not_allowed",
 	"stop_not_saved":     "rpc-errors.stop_not_saved",
-	// a message to an omp session the node cannot resume: one not running with no known file, or a stopped one listed
-	// from omp's session files (node/control.go, node/ompcalls.go)
+	// a message to an omp session the node cannot resume: no usable session file (node/ompresume.go)
 	"omp_resume_unknown": "rpc-errors.omp_resume_unknown",
+	// a call a stopped omp has nothing to answer with: rename, interrupt, modes, queue, close (node/ompcalls.go)
+	"omp_stopped": "rpc-errors.omp_stopped",
 	// a start in a directory whose name can't be typed into a terminal (node/hostorca_launch.go)
 	proto.CodeDirectoryUntypable: "rpc-errors.directory_untypable",
 	// a running Agent's switch to another launcher, picked and carried out by the next message (node/launcher_switch.go)
@@ -408,10 +413,11 @@ func RPCText(l i18n.Lang, text string) string {
 // codeActions are the refusals whose words the hub writes itself, wherever they came from (the assistant, a node),
 // with what a client offers to fix each (docs/assistant/onboarding.md 4.6, 5.2).
 var codeActions = map[string]string{
-	proto.CodeNoMachine:       "add_computer",
-	proto.CodeMachinePending:  "confirm_computer",
-	proto.CodeClaudeMissing:   "install_claude",
-	proto.CodeLauncherMissing: "connect_model",
+	proto.CodeNoMachine:        "add_computer",
+	proto.CodeMachinePending:   "confirm_computer",
+	proto.CodeClaudeMissing:    "install_claude",
+	proto.CodeLauncherMissing:  "connect_model",
+	proto.TurnErrorNotLoggedIn: "connect_model",
 }
 
 // OnMachine is err naming the machine (its display name) it was refused on, when it is one of the refusals the hub

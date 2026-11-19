@@ -1,5 +1,25 @@
 # Lessons: Claude Code, Codex, and herdr
 
+## A one-start speed must not become a resume default (#11141)
+
+- Codex's per-start `service_tier` belongs only in the initial argv; validate it against the selected model's catalog rather than trusting Codex to refuse an unadvertised tier.
+- Claude Code fast mode needs `"fastMode": true` in the effective single `--settings` file. Give the initial command a merged copy and keep the base `claudeLaunch` spec for herdr's `resume_argv`, or an automatic resume silently inherits the billable choice. A shell function that supplies its own `--settings` cannot be merged: refuse fast mode rather than appending a fast-only file that would discard the function's credentials and model.
+- A new `session.start` field needs its own node capability: older nodes otherwise accept it and start at the launcher's speed. Faster speed on a resume or another runtime is a coded refusal before approval or launch.
+
+## An account-sealed compaction needs a new conversation, not Continue (#10399)
+
+- Classify the permanent cause before trusting a runtime's generic transient kind or a gateway's status. Cancel
+  continuations already queued before the cause was recognized; hiding the button alone does not stop them.
+- Archiving is visibility, not invalidation: a newer transcript restores it. Derive obsolete interruption rows from
+  the linked task's current participants, parking and close state, and keep the same cases on every client.
+- Error detection also runs on every ordinary session's last answer. Compare a case-insensitive prefix without
+  lowercasing whole answers; an extra allocation per row broke the 8,200-session list's allocation budget.
+- For mock screenshots, combine `MOCK_TASKS=1 MOCK_TASKS_CUT=1 MOCK_TASKS_INVALID=1` with the mock hub. This is UI
+  evidence only, not deployment or proof that a real account-sealed conversation has disappeared from Needs you.
+- Keep permanent compaction errors separate from retryable tool-search refusals when merging error handling.
+  Preserve both wire codes and both failed-turn tests; loading all tools can fix tool search, not account-sealed context.
+
+
 ## A deferred action on an agent belongs to its process, not its session id (#10296)
 
 - A session id outlives its Claude Code process: the owner quits and resumes, Persona's Resume starts a new one, a crash is resumed. A queued restart into Full access, keyed by session id alone for a day, quit a claude that resumed the conversation later in Default and restarted it in Full access.
@@ -1190,6 +1210,18 @@ distinguishes even repeated prompts with identical timestamps. Preserve prefix a
 pairing too, and invalidate old cached pages once. Test normal runtime pages and full-item reads across append and
 complete-file replacement; fresh sessions and distinct sequential prompts do not exercise reused identities.
 
+## AGY exports parallel results as they finish; a late step is not a rewind, and a call without a result must not shift the rest (#11086)
+
+Parallel calls are exported in completion order, so a call that fails at once (unknown tool, invalid arguments) lands
+before its sibling's result: `228` (two calls), `230` (INVALID), `229`. Reading the lower index as a rewind popped
+`230`, started a new branch and left the second call without a result. The readers also paired results with calls
+through a queue that nothing reset, so one orphan call shifted every later result onto the call before its own, and the
+newest calls ended with no result, which the hub does not fold and the web draws as running tools. A step whose index
+no retained step has is a late arrival: insert it in step order, keep the branch (item IDs) and change the content
+revision so watchers re-read. A planner step, a prompt or an error closes the calls before it. `integrations/antigravity/lib/map.js`
+and `server/internal/node/agytranscript.go` must stay in step. Test with a real export's shape (the swapped lines,
+an interrupted call, a system message between results) and compare each result with its own call, not only the counts.
+
 ## An installed CLI is not an explicit runtime override (#9181)
 
 Plain AGY discovery joined the shell launcher cache and shadowed its connected assistant-capable companion. New
@@ -1233,6 +1265,20 @@ Native model availability changes independently of Persona releases. Discover th
 settings and session metadata for defaults and current values. A fixed catalog hides new models and invents labels for
 external sessions. Treat ACP configuration responses and notifications as authoritative, publish acknowledged partial
 changes, and propagate failures. Native `auto` is distinct from full permission bypass.
+
+## ACP mode success is not the applied agy mode (#10980)
+
+agy can accept `session/set_mode` yet apply `default` because native Auto is unavailable. Treat the direct mode result or
+`current_mode_update` as the answer, not a model's trailing `config_option_update`; otherwise accepted Auto can be mistaken
+for a refusal. When Auto is refused, apply the existing `bypassPermissions` path through native `accept-edits`, wait for
+that fallback before answering a permission, publish the final mode and emit one notice. An acknowledgement of `auto` can
+precede a delayed `default`, so only a newer non-Auto choice ends that correlation. Serialize the fallback with newer
+explicit mode changes, reapply an explicit mode if native settings diverge from it, and recheck interruption after every
+fallback wait. Keep whether a mode was explicit or came from agy's settings: explicit choices survive settings changes,
+while settings-derived sessions reread and reapply `configuredMode()` before the next prompt. A notice sent only with
+`rt.append` disappears on refetch; keep it in the item projection at a stable sequence as later native steps arrive, and
+retain the native step index separately for output files and client-message bindings. Cover direct and notification
+refusals, repeated starts, all three asking modes, settings changes, notice reloads and en / zh-Hans / ja localization.
 
 ## Runtime availability checks need the runtime's authentication context (#3790)
 

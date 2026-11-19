@@ -171,13 +171,12 @@ export function triage(todo: Todo, lookup: SessionLookup | undefined, now: numbe
   // rule 8's signals, read here so rule 9 yields to them: a turn or review still awaiting acceptance stays Just finished
   const finished = status === "unread" || review === "pending_review" || (ask && !ask.outcome) || ask?.outcome === "done";
   const acceptanceRequired = review === "pending_review" || Boolean(todo.supervision?.supervisor);
-  const seenSupervisorReview = review === "pending_review" && seen(last);
   // a parked hold is its supervisor's reading of the latest turn: an agent session left unread does not hide its PR
   // accepted or delivered work keeps its finished semantics whatever its PR facts say (#7614, #5732)
   const settled = !concern && (acceptanceStands(todo) || todo.delivery?.state === "live");
-  if (!settled && !(finished && (!seen(last) || (acceptanceRequired && !seenSupervisorReview)) && review !== "parked") && waitingForMerge(todo, lookup, now)) {
-    // Seeing a supervisor's review does not finish its open PR or turn that internal review into an external wait.
-    return review === "pending_review" ? at("other", "rest") : at("parked", "pr_open");
+  if (!settled && !(finished && (!seen(last) || acceptanceRequired) && review !== "parked") && waitingForMerge(todo, lookup, now)) {
+    // Only work with no acceptance still required becomes an external merge wait.
+    return at("parked", "pr_open");
   }
   if (status === "working" || status === "waiting") return at("working", "agent_running");
   if (todo.done_at) return at(todo.kind === "concern" && fresh(ms(todo.done_at)) ? "just_done" : "done", "closed");

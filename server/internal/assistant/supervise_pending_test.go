@@ -666,6 +666,112 @@ func TestSupervisedWorkingForgetsDurableIdleBeforeRestore(t *testing.T) {
 	}
 }
 
+// relayWriteFailure keeps relay persistence down while independent turn/dedup writes continue to succeed.
+type relayWriteFailure struct {
+	Store
+	mu   sync.Mutex
+	fail bool
+}
+
+func (st *relayWriteFailure) setFail(fail bool) {
+	st.mu.Lock()
+	st.fail = fail
+	st.mu.Unlock()
+}
+
+func (st *relayWriteFailure) PutSetting(ctx context.Context, key string, value any) error {
+	st.mu.Lock()
+	fail := st.fail && key == relayKey
+	st.mu.Unlock()
+	if fail {
+		return errors.New("injected relay write failure")
+	}
+	return st.Store.PutSetting(ctx, key, value)
+}
+
+// A failed queue/outbox write is not durable admission. In particular, the independent turn-told write must not make
+// restart recovery suppress the only remaining evidence of the notification (#5732).
+func TestFailedSupervisionQueueWriteDoesNotMarkTurnTold(t *testing.T) {
+	st := &relayWriteFailure{Store: planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	ctx := context.Background()
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+	g := superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "queue-write-failure", Detail: "durable admission", At: time.Now()}
+	markLeaderTurnSignalled(t, s, g)
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusWorking})
+	st.setFail(true)
+	s.signal(g) // its initial outbox write fails too, as in the reported failure sequence
+	accepted := s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{g}, testWeb, time.Now(), time.Time{})
+	if accepted {
+		t.Error("a failed durable queue write was reported as accepted delivery")
+	}
+
+	if got := s.queuedFor("conv1"); got != 0 {
+		t.Errorf("a relay write failure left %d messages apparently admitted", got)
+	}
+	entry, ok := s.turnOf(ctx, todo.ID)
+	told := ok && entry.Signal != nil && entry.Signal.Told != nil
+	if told {
+		t.Errorf("the failed queue write finalized the turn receipt: %+v", entry.Signal)
+		return
+	}
+	s.supervise.mu.Lock()
+	_, pending := s.supervise.pending[g.id()]
+	s.supervise.mu.Unlock()
+	if !pending {
+		t.Fatal("the failed queue write did not restore the in-memory signal")
+	}
+
+	simulateSupervisionRestart(t, s)
+	st.setFail(false)
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.signal(g)
+	waitFor(t, "the untold turn after relay recovery", func() bool {
+		return strings.Contains(strings.Join(f.noticesTo("conv1"), "\n"), g.Detail)
+	})
+}
+
+func TestFailedQueuedSupervisionReplacementDoesNotMarkTurnTold(t *testing.T) {
+	st := &relayWriteFailure{Store: planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	ctx := context.Background()
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+	old := superviseSignal{Todo: todo.ID, Kind: sigStalled, Key: "old-queued", Detail: "old queued text", At: time.Now()}
+	if n := s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: old.Detail, Signals: encodeDigestSignals([]superviseSignal{old}), At: time.Now()}); n != 1 {
+		t.Fatalf("queue the original supervision message: %d", n)
+	}
+	s.relays.mu.Lock()
+	before := s.relays.st.Queue["conv1"][0]
+	s.relays.mu.Unlock()
+
+	g := superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "replacement-write-failure", Detail: "replacement admission", At: time.Now()}
+	markLeaderTurnSignalled(t, s, g)
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusWorking})
+	st.setFail(true)
+	s.signal(g)
+	accepted := s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{g}, testWeb, time.Now(), time.Time{})
+	if accepted {
+		t.Error("a failed queued-message replacement was reported as accepted delivery")
+	}
+	s.relays.mu.Lock()
+	after := s.relays.st.Queue["conv1"][0]
+	s.relays.mu.Unlock()
+	if after.Text != before.Text || after.Signals != before.Signals {
+		t.Errorf("the failed replacement changed the original queue entry: before=%+v after=%+v", before, after)
+	}
+	entry, ok := s.turnOf(ctx, todo.ID)
+	if ok && entry.Signal != nil && entry.Signal.Told != nil {
+		t.Errorf("the failed replacement finalized the new turn receipt: %+v", entry.Signal)
+	}
+}
+
 // Queue admission and outbox acknowledgment are one relay-state write. An older crash state with both is reconciled.
 func TestQueuedSupervisionAndOutboxAreAtomic(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}

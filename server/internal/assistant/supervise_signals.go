@@ -87,6 +87,9 @@ type superviseSignal struct {
 	// To is the conversation it goes to when that is not digestTo's to say: a card's rung (sigAsk), the main
 	// conversation for a leader's escalated cards.
 	To string
+	// OriginOnly records that this signal reached its dispatcher through the no-main fallback. The queue preserves
+	// that delivery provenance so restoring it after main returns cannot turn it into a legacy closeout grant.
+	OriginOnly bool `json:",omitempty"`
 	// Cards: an escalated signal's cards the user was given (ask_escalate).
 	Cards []prompts.SuperviseAsk
 	// Decision: the decision a recheck or an owner_cannot_answer signal is about, as it was asked (decision.go); for

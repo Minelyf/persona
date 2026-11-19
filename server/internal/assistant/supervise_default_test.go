@@ -195,10 +195,11 @@ func TestLegacySideQueuedReviewRehomesToMain(t *testing.T) {
 	}
 }
 
-// A queued notice explicitly addressed to the configured legacy background is intentional compatibility delivery,
-// not an orphaned side signal. Crash recovery must leave it there even though the ledger already names main (#5732).
-func TestLegacyBackgroundQueuedReviewStaysWithBackground(t *testing.T) {
-	s, f, todo := newSupervisedService(t)
+// An ambiguous pre-upgrade queue stays available after recovery, but its empty-To bytes are not proof of an explicit
+// legacy route. Background acceptance is refused; main retains the recoverable closeout path (#5732).
+func TestAmbiguousPreUpgradeBackgroundQueueDefersToMain(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
 	setSuperviseTimingsForTest(s, superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour})
 	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
 	f.setSessions("server",
@@ -224,6 +225,55 @@ func TestLegacyBackgroundQueuedReviewStaysWithBackground(t *testing.T) {
 	}
 	if got := s.queuedFor("conv1"); got != 0 {
 		t.Fatalf("the intentional background entry was duplicated to main: queue=%d", got)
+	}
+
+	// Empty-To alone cannot distinguish this old automatic route from a no-main Origin fallback after handover or
+	// continuation. Do not invent a background grant; main can still accept the same queued review.
+	ctx := context.Background()
+	var beforeRestart relayState
+	if ok, err := s.store().Setting(ctx, relayKey, &beforeRestart); err != nil || !ok {
+		t.Fatalf("read the pre-upgrade relay fixture: ok=%v err=%v", ok, err)
+	}
+	if beforeRestart.LegacyBackground["bg1\x00"+todo.ID] {
+		t.Fatal("the pre-upgrade recovery fixture unexpectedly has a positive grant")
+	}
+	simulateSupervisionRestart(t, s)
+	if s.backgroundSupervises(ctx, "bg1", todoNow(s, todo.ID)) {
+		t.Fatal("an ambiguous empty-To queue reconstructed background acceptance authority")
+	}
+	if res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "ambiguous provenance", "checks": completeReviewChecks(todoNow(s, todo.ID))}); err == nil {
+		t.Fatalf("the ambiguous queue authorized background closeout: %s", res)
+	}
+	if got := todoNow(s, todo.ID); got.DoneAt != nil {
+		t.Fatalf("the ambiguous background review closed the task: %+v", got)
+	}
+	if _, err := runJSON(t, s, "conv1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "main recovers the review", "checks": completeReviewChecks(todoNow(s, todo.ID))}); err != nil {
+		t.Fatalf("main could not recover the ambiguous queued review: %v", err)
+	}
+	if got := todoNow(s, todo.ID); got.DoneAt == nil {
+		t.Fatal("main's acceptance did not close the recoverable task")
+	}
+}
+
+func TestLegacyBackgroundEmptyToDeliveryKeepsCloseout(t *testing.T) {
+	s, f, todo := newSupervisedService(t)
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	ctx := context.Background()
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+	g := superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "legacy-empty-to-delivery", Detail: "legacy-empty-to-marker", At: time.Now()}
+	if !s.deliverDigest(ctx, s.settings(ctx), "bg1", []superviseSignal{g}, testWeb, time.Now(), time.Time{}) {
+		t.Fatal("the legacy background did not accept its direct delivery")
+	}
+	if !s.backgroundSupervises(ctx, "bg1", todoNow(s, todo.ID)) {
+		t.Fatal("an empty-To direct legacy delivery did not publish its closeout grant")
+	}
+	if _, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "legacy closeout", "checks": completeReviewChecks(todoNow(s, todo.ID))}); err != nil {
+		t.Fatalf("the empty-To direct legacy task could not close: %v", err)
 	}
 }
 

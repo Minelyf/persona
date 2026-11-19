@@ -258,6 +258,10 @@ The counts are the same whatever the list is grouped by (web audit item 12), and
   a line says how many open ones no direction lists; the rest outside Done and Cancelled (unaccepted deliveries awaiting
   review and inactive work) keep their status sections below the directions, as Android's list does, so a to-do ticked there
   moves to Done instead of leaving the list. The folded **Done** and **Cancelled** sections stay separate.
+- **By request**: a request with an open root or piece stays active, including one that also contains cancelled pieces.
+  It enters **Done** only when its non-cancelled root and every piece are ordinarily done. A terminal request with a
+  cancelled root or piece enters the separate **Cancelled** fold instead. Cancelled pieces never add to the Done
+  numerator; a cancelled root keeps its own card and reason rather than merging into a same-title piece.
 
 Before the first read of the to-dos lands the header shows no counts, not zeros (audit item 83).
 

@@ -181,6 +181,339 @@ func TestBackgroundReviewIsLimitedToLegacyNotices(t *testing.T) {
 	settleService(t, s)
 }
 
+// A no-main Origin fallback is delivery only, never evidence of an explicit legacy background route. Both a visible
+// delivery and a structured queue restored after restart must preserve that distinction (#5732).
+func TestNoMainBackgroundOriginNoticeDoesNotGrantCloseout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		queued      bool
+		restoreMain bool
+	}{
+		{name: "direct"},
+		{name: "queued", queued: true},
+		{name: "queued_restore_main", queued: true, restoreMain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+			s, f := newQuietServiceOn(t, st)
+			secretary(f)
+			f.known["bg1"] = true
+			status := proto.StatusIdle
+			if tc.queued {
+				status = proto.StatusWorking
+			}
+			f.setSessions("server", proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: status})
+			setSettings(t, s, func(v *Settings) {
+				v.Main = ""
+				v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server"
+			})
+			if _, err := runJSON(t, s, "bg1", "agent_send", map[string]any{"machine": "box", "session_id": "sec00001", "text": "把周报数据拉一下",
+				"task": map[string]any{"title": "拉周报数据", "done_when": []string{"表格链接贴回来"}}}); err != nil {
+				t.Fatal(err)
+			}
+			todo := onlyTodo(s)
+			if todo.Origin != "bg1" || todo.Supervision == nil || todo.Supervision.Supervisor != "" {
+				t.Fatalf("the no-main dispatch changed provenance: %+v %+v", todo, todo.Supervision)
+			}
+			if _, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {
+				v.State = reviewPending
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.signal(superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "no-main-origin-review", At: time.Now()})
+			if tc.queued {
+				waitFor(t, "the no-main Origin queue", func() bool { return s.queuedFor("bg1") == 1 })
+			} else {
+				waitFor(t, "the no-main Origin notification", func() bool {
+					return strings.Contains(strings.Join(f.noticesTo("bg1"), "\n"), todo.ID)
+				})
+			}
+			if tc.queued {
+				s.relays.mu.Lock()
+				raw := s.relays.st.Queue["bg1"][0].Signals
+				s.relays.mu.Unlock()
+				queued, structured := decodeDigestSignals(raw)
+				if !structured || len(queued) != 1 || !queued[0].OriginOnly {
+					t.Fatalf("the no-main route was not persisted with its queued signal: %+v", queued)
+				}
+			}
+			if tc.restoreMain {
+				setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+				if _, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {
+					v.Supervisor = "conv1"
+					return true
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.queued {
+				simulateSupervisionRestart(t, s)
+			}
+
+			current := todoNow(s, todo.ID)
+			if s.backgroundSupervises(context.Background(), "bg1", current) {
+				t.Error("the no-main Origin fallback became background acceptance authority")
+			}
+			res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "origin is not acceptance", "checks": completeReviewChecks(current)})
+			if err == nil {
+				t.Errorf("the Origin fallback accepted its own task: %s", res)
+			}
+			if got := todoNow(s, todo.ID); got.DoneAt != nil {
+				t.Errorf("the unauthorized Origin review closed the task: %+v", got)
+			}
+			settleService(t, s)
+		})
+	}
+}
+
+// A signal that waited through main's restore and removal is still a no-main Origin delivery. The Supervisor left by
+// rehoming is current ledger state, not evidence that the background notice came from an explicit legacy route.
+func TestNoMainPendingReviewAfterRehomeDoesNotGrantCloseout(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f := newQuietServiceOn(t, st)
+	secretary(f)
+	f.known["bg1"] = true
+	f.setSessions("server", proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) {
+		v.Main = ""
+		v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server"
+	})
+	if _, err := runJSON(t, s, "bg1", "agent_send", map[string]any{"machine": "box", "session_id": "sec00001", "text": "把周报数据拉一下",
+		"task": map[string]any{"title": "拉周报数据", "done_when": []string{"表格链接贴回来"}}}); err != nil {
+		t.Fatal(err)
+	}
+	todo := onlyTodo(s)
+	ctx := context.Background()
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+	setSuperviseTimingsForTest(s, superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour})
+	s.signal(superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "pending-through-rehome", At: time.Now()})
+	setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.Supervisor = "conv1"; return true }); err != nil {
+		t.Fatal(err)
+	}
+	setSettings(t, s, func(v *Settings) { v.Main = "" })
+	setSuperviseTimingsForTest(s, superviseTimings{gather: 1, every: 1, urgent: time.Hour})
+	s.sendDigest(ctx)
+
+	current := todoNow(s, todo.ID)
+	if s.backgroundSupervises(ctx, "bg1", current) {
+		t.Error("a pending no-main signal acquired acceptance authority through rehome")
+	}
+	res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "origin is not acceptance", "checks": completeReviewChecks(current)})
+	if err == nil {
+		t.Errorf("the rehomed pending Origin review accepted its own task: %s", res)
+	}
+	if got := todoNow(s, todo.ID); got.DoneAt != nil {
+		t.Errorf("the unauthorized rehomed Origin review closed the task: %+v", got)
+	}
+	settleService(t, s)
+}
+
+// A queue written before OriginOnly existed carries the same no-main fallback (#10126). Restart recovery must not use
+// the restored main and rehomed ledger to reinterpret that old Origin delivery as a legacy closeout grant.
+func TestPreUpgradeNoMainQueueDoesNotGainGrantAfterRehome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		handover bool
+	}{
+		{name: "supervisor_rehome"},
+		{name: "origin_handover", handover: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+			s, f := newQuietServiceOn(t, st)
+			secretary(f)
+			f.known["bg1"] = true
+			f.setSessions("server", proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusWorking})
+			setSettings(t, s, func(v *Settings) {
+				v.Main = ""
+				v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server"
+			})
+			if _, err := runJSON(t, s, "bg1", "agent_send", map[string]any{"machine": "box", "session_id": "sec00001", "text": "把周报数据拉一下",
+				"task": map[string]any{"title": "拉周报数据", "done_when": []string{"表格链接贴回来"}}}); err != nil {
+				t.Fatal(err)
+			}
+			todo := onlyTodo(s)
+			ctx := context.Background()
+			if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+				t.Fatal(err)
+			}
+			g := superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "pre-origin-only-queue", At: time.Now()}
+			if n := s.queueRelay("bg1", relayMsg{From: superviseTool, Tool: superviseTool, Text: "old no-main Origin review", Signals: encodeDigestSignals([]superviseSignal{g}), At: g.At}); n != 1 {
+				t.Fatalf("queue the pre-upgrade Origin notice: %d", n)
+			}
+			setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+			if tc.handover {
+				setSettings(t, s, func(v *Settings) { v.Main = "bg1" })
+				if moved := s.handOverMainTasks(ctx, "bg1", "conv1"); moved != 1 {
+					t.Fatalf("the production main handover moved %d tasks", moved)
+				}
+				setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+			} else if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.Supervisor = "conv1"; return true }); err != nil {
+				t.Fatal(err)
+			}
+			simulateSupervisionRestart(t, s)
+
+			current := todoNow(s, todo.ID)
+			if tc.handover && (current.Origin != "conv1" || current.Supervision.Supervisor != "conv1") {
+				t.Fatalf("the production handover did not move Origin and Supervisor: %+v", current)
+			}
+			if s.backgroundSupervises(ctx, "bg1", current) {
+				t.Error("a pre-upgrade no-main queue became acceptance authority after rehome")
+			}
+			res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "origin is not acceptance", "checks": completeReviewChecks(current)})
+			if err == nil {
+				t.Errorf("the pre-upgrade Origin queue accepted its own task: %s", res)
+			}
+			if got := todoNow(s, todo.ID); got.DoneAt != nil {
+				t.Errorf("the unauthorized pre-upgrade Origin review closed the task: %+v", got)
+			}
+			settleService(t, s)
+		})
+	}
+}
+
+// An ask remembers its original rung in To. If that rung disappears with main, routeTo falls back to the task's
+// dispatcher; the original target must not turn that no-main delivery into a legacy acceptance grant.
+func TestNoMainAskFallbackDoesNotGrantCloseout(t *testing.T) {
+	e := newRouteEnv(t, nil, true)
+	s := e.s
+	ctx := context.Background()
+	setSuperviseTimingsForTest(s, superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour})
+	e.f.known["bg1"] = true
+	convs := []proto.Session{
+		{SessionID: "conv1", MachineID: "server", Cwd: assistantHome, Assistant: true, Status: proto.StatusIdle},
+		{SessionID: "lead1", MachineID: "server", Cwd: assistantHome, Assistant: true, Status: proto.StatusIdle},
+		{SessionID: "bg1", MachineID: "server", Cwd: assistantHome, Assistant: true, Status: proto.StatusIdle},
+	}
+	e.sessions("server", convs...)
+	e.f.setSessions("server", convs...)
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	todo := e.todo
+	todo.Origin = "bg1"
+	putTodo(s, todo)
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.Supervisor = ""; return true }); err != nil {
+		t.Fatal(err)
+	}
+	e.raise(askQuestion("ix_no_main_origin", "worker-1"))
+	waitFor(t, "the ask routed to main", func() bool {
+		ix, ok := e.shown("ix_no_main_origin")
+		return ok && ix.Delegating
+	})
+	var routed superviseSignal
+	waitFor(t, "the routed ask signal", func() bool {
+		s.supervise.mu.Lock()
+		defer s.supervise.mu.Unlock()
+		for _, g := range s.supervise.pending {
+			if g.Kind == sigAsk {
+				routed = g
+				return true
+			}
+		}
+		return false
+	})
+	if routed.To != "conv1" {
+		t.Fatalf("the ask did not retain its original main rung: %+v", routed)
+	}
+
+	setSettings(t, s, func(v *Settings) { v.Main = "" })
+	convs = []proto.Session{{SessionID: "bg1", MachineID: "server", Cwd: assistantHome, Assistant: true, Status: proto.StatusIdle}}
+	e.sessions("server", convs...)
+	e.f.setSessions("server", convs...)
+	setSuperviseTimingsForTest(s, superviseTimings{gather: 1, every: 1, urgent: time.Hour})
+	s.sendDigest(ctx) // conv1 is gone: the actual delivery falls back to Origin=bg1 while To stays conv1
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+
+	current := todoNow(s, todo.ID)
+	if s.backgroundSupervises(ctx, "bg1", current) {
+		t.Error("the no-main ask fallback became background acceptance authority")
+	}
+	res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "origin is not acceptance", "checks": completeReviewChecks(current)})
+	if err == nil {
+		t.Errorf("the ask Origin fallback accepted its own task: %s", res)
+	}
+	if got := todoNow(s, todo.ID); got.DoneAt != nil {
+		t.Errorf("the unauthorized ask-fallback review closed the task: %+v", got)
+	}
+	e.settle()
+}
+
+// A failed start can have no supervision ledger yet. Its no-main failure digest is still delivery-only: creating a
+// ledger later must not turn that old notice into the dispatcher's acceptance authority.
+func TestNoMainFailedStartNoticeDoesNotGrantCloseout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		queued  bool
+		restart bool
+	}{
+		{name: "direct"},
+		{name: "queued_restore_main", queued: true, restart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+			s, f := newQuietServiceOn(t, st)
+			secretary(f)
+			f.known["bg1"] = true
+			status := proto.StatusIdle
+			if tc.queued {
+				status = proto.StatusWorking
+			}
+			f.setSessions("server", proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: status})
+			setSettings(t, s, func(v *Settings) {
+				v.Main = ""
+				v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server"
+			})
+			setSuperviseTimingsForTest(s, superviseTimings{gather: 1, every: 1, urgent: time.Hour})
+			todo := Todo{ID: "todo_no_main_failed", Title: "A start that failed", Origin: "bg1"}
+			putTodo(s, todo)
+			ctx := context.Background()
+			s.taskStartFailed(ctx, todo, "box", nil, "runtime unavailable")
+			s.sendDigest(ctx)
+			if tc.queued {
+				if got := s.queuedFor("bg1"); got != 1 {
+					t.Fatalf("the failed-start notice did not queue: %d", got)
+				}
+				s.relays.mu.Lock()
+				raw := s.relays.st.Queue["bg1"][0].Signals
+				s.relays.mu.Unlock()
+				queued, structured := decodeDigestSignals(raw)
+				if !structured || len(queued) != 1 || !queued[0].OriginOnly {
+					t.Errorf("the no-main failed-start route was not persisted: %+v", queued)
+				}
+			}
+			setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+			if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool {
+				v.Supervisor, v.State = "conv1", reviewPending
+				v.DoneWhen = []string{"the start is recovered"}
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.restart {
+				simulateSupervisionRestart(t, s)
+			}
+
+			current := todoNow(s, todo.ID)
+			if s.backgroundSupervises(ctx, "bg1", current) {
+				t.Error("the no-main failed-start notice became background acceptance authority")
+			}
+			res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "origin is not acceptance", "checks": completeReviewChecks(current)})
+			if err == nil {
+				t.Errorf("the failed-start Origin fallback accepted its own task: %s", res)
+			}
+			if got := todoNow(s, todo.ID); got.DoneAt != nil {
+				t.Errorf("the unauthorized failed-start review closed the task: %+v", got)
+			}
+			settleService(t, s)
+		})
+	}
+}
+
 // visibleBackgroundSend makes the legacy notice visible before its send returns, exposing the closeout grant's
 // publication boundary without sleeping for a scheduler accident.
 type visibleBackgroundSend struct {
@@ -330,7 +663,7 @@ func TestLegacyBackgroundQueuedNoticeSurvivesRestart(t *testing.T) {
 	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: legacyText, At: time.Now()}); n != 1 {
 		t.Fatalf("queue the legacy notice: %d", n)
 	}
-	structured := []superviseSignal{{Todo: "todo_structured"}}
+	structured := []superviseSignal{{Todo: "todo_structured", To: "bg1"}}
 	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: "structured notice", Signals: encodeDigestSignals(structured), At: time.Now()}); n != 2 {
 		t.Fatalf("queue the structured notice: %d", n)
 	}

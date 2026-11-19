@@ -602,6 +602,68 @@ func TestAcceptedIsRefusedWhileTheWorkWaitsOnTheOwner(t *testing.T) {
 	}
 }
 
+// A review writes its terminal ledger before it closes the todo. A late needs_user judgment from the reviewed work
+// must not reopen that ledger in the gap, emit another signal, or leave a closed task waiting on the owner (#5732).
+func TestLateOwnerWaitDoesNotOverwriteTerminalReview(t *testing.T) {
+	for _, verdict := range []string{reviewAccepted, reviewCancelled} {
+		t.Run(verdict, func(t *testing.T) {
+			s, _, todo := newSupervisedService(t)
+			s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+			work := time.Now().Add(-time.Minute).UTC()
+			if _, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {
+				v.State = verdict
+				v.Waits = nil
+				v.Reviews = append(v.Reviews, TaskReview{At: time.Now().UTC(), Verdict: verdict})
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if s.noteOwnerWait(context.Background(), todoNow(s, todo.ID), work, "late owner action") {
+				t.Error("a late owner wait was admitted after the terminal review")
+			}
+			current := todoNow(s, todo.ID)
+			if current.Supervision.State != verdict || current.Supervision.Waits != nil {
+				t.Errorf("the late judgment replaced the terminal ledger: %+v", current.Supervision)
+			}
+			s.supervise.mu.Lock()
+			_, signalled := s.supervise.pending[todo.ID+"|"+sigIdle]
+			s.supervise.mu.Unlock()
+			if signalled {
+				t.Error("the rejected owner wait emitted an idle signal")
+			}
+			closed, err := s.reviewDoneTodo(context.Background(), todo.ID, "review finished", verdict == reviewAccepted)
+			if err != nil || !closed {
+				t.Fatalf("reviewDoneTodo: closed=%t err=%v", closed, err)
+			}
+			current = todoNow(s, todo.ID)
+			if current.DoneAt == nil || current.Supervision.State != verdict || current.Supervision.Waits != nil {
+				t.Errorf("the review close left a late owner wait behind: %+v %+v", current, current.Supervision)
+			}
+			if s.noteOwnerWait(context.Background(), current, work, "after close") {
+				t.Error("a closed todo admitted an owner wait")
+			}
+		})
+	}
+}
+
+func TestOwnerWaitAfterReopenedWorkIsNotSuppressedByAnOlderReview(t *testing.T) {
+	s, _, todo := newSupervisedService(t)
+	work := time.Now().UTC()
+	if _, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {
+		v.State = reviewAccepted
+		v.Reviews = append(v.Reviews, TaskReview{At: work.Add(-time.Hour), Verdict: reviewAccepted})
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.noteOwnerWait(context.Background(), todoNow(s, todo.ID), work, "new work needs the owner") {
+		t.Fatal("an older review suppressed a new work stretch's owner wait")
+	}
+	if got := todoNow(s, todo.ID).Supervision; got.State != reviewNeedsUser || got.Waits == nil {
+		t.Fatalf("the new work stretch did not become visible: %+v", got)
+	}
+}
+
 // The owner's answer reaches the agent and it goes on: the wait is over, a later not-done verdict still reaches main,
 // and once the judge finds the work done the task is accepted as usual.
 func TestOwnerWaitEndsWhenTheAgentGoesOn(t *testing.T) {

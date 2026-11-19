@@ -10,6 +10,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import persona.core.contracts.Direction
+import persona.core.contracts.DirectionTask
+import persona.core.contracts.DirectionTaskState
+import persona.core.contracts.DirectionTree
 import persona.core.contracts.Supervision
 import persona.core.contracts.TaskReview
 import persona.core.contracts.Todo
@@ -43,6 +47,29 @@ class TodoCancellationLineageTest {
                 TodosScreen(listOf(cancelled), emptyList(), null, onBack = {}, onOpenTodo = {})
             }
         }
+        rule.onNodeWithText("Cancelled").performClick()
+        rule.onNodeWithText("Revised attempt").assertExists()
+        rule.onNodeWithText("Cancelled: Superseded by the revised plan").assertExists()
+    }
+
+    @Test fun cancelledRowStaysOutOfAStaleDirectionTree() {
+        val open = Todo("open", title = "Open work")
+        val tree = DirectionTree(listOf(Direction("release", "Release direction", tasks = listOf(
+            DirectionTask(cancelled.id, state = DirectionTaskState.Working),
+            DirectionTask(open.id, state = DirectionTaskState.Working),
+        ))))
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                TodosScreen(listOf(cancelled, open), emptyList(), null, onBack = {}, onOpenTodo = {}, directions = tree)
+            }
+        }
+        rule.onNodeWithTag("todos-filter").performClick()
+        rule.onNodeWithText("Pinned").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("Release direction").assertExists()
+        rule.onNodeWithText("Open work").assertExists()
+        // The stale tree still names the cancelled id, but the row belongs only to its folded Cancelled section.
+        rule.onNodeWithText("Revised attempt").assertDoesNotExist()
         rule.onNodeWithText("Cancelled").performClick()
         rule.onNodeWithText("Revised attempt").assertExists()
         rule.onNodeWithText("Cancelled: Superseded by the revised plan").assertExists()

@@ -95,6 +95,26 @@ func (s *Service) legacyBackgroundNotice(ctx context.Context, self, todoID strin
 	return s.relayLocked(ctx) && r.st.LegacyBackground[key]
 }
 
+// noMainOriginFallback identifies only the new delivery fallback that must not become closeout evidence. conversation
+// is the actual target, whereas g.To may still name an ask's old, now unreachable rung (routeTo). A current Supervisor
+// is not historical delivery evidence: main may have been restored and removed while the signal waited.
+func (s *Service) noMainOriginFallback(cfg Settings, conversation string, g superviseSignal) bool {
+	if cfg.Main != "" || conversation != cfg.BackgroundSupervisor || g.Todo == "" {
+		return false
+	}
+	t, ok := s.todoNow(g.Todo)
+	return ok && t.Origin == conversation
+}
+
+// restoredLegacyBackgroundNotice says whether a structured queue entry is itself evidence of an old background route.
+// Only its explicit destination is immutable per-delivery evidence. Origin and Supervisor can move during handover,
+// and a brief can be shared by a continuation, so neither can safely reconstruct authority for an ambiguous empty-To
+// entry. Such an entry stays queued for main instead of inventing a background grant. Persisted positive grants and
+// successful direct empty-To legacy deliveries retain their closeout permission.
+func (s *Service) restoredLegacyBackgroundNotice(cfg Settings, conversation string, g superviseSignal) bool {
+	return g.Todo != "" && !g.OriginOnly && g.To == conversation && !s.noMainOriginFallback(cfg, conversation, g)
+}
+
 // rememberLegacyBackground records the tasks whose old notices were delivered or queued for this background
 // conversation. Only explicit legacy signals can route there now (digestTo), so this is also the closeout permission.
 func (s *Service) rememberLegacyBackground(conversation string, list []superviseSignal) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"path"
@@ -398,6 +399,7 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 		rs.SupervisePending = map[string]superviseSignal{}
 	}
 	// Upgrade an old queue in place: structured signals are exact; a pre-signals message still carries its todo ids.
+	here := s.settings(ctx)
 	for conversation, queue := range rs.Queue {
 		for _, msg := range queue {
 			if msg.Tool != superviseTool {
@@ -405,7 +407,9 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 			}
 			if signals, structured := decodeDigestSignals(msg.Signals); structured {
 				for _, g := range signals {
-					if g.Todo != "" {
+					// Structured recovery requires explicit per-delivery evidence, not a guess from mutable
+					// task fields or a lineage-shared brief. Ambiguous old queues stay available to main.
+					if s.restoredLegacyBackgroundNotice(here, conversation, g) {
 						rs.LegacyBackground[conversation+"\x00"+g.Todo] = true
 					}
 				}
@@ -754,6 +758,8 @@ func (s *Service) queueRelay(to string, msg relayMsg) int {
 		msg.DoubtedAt = b.doubted[relayMsgID(to, msg)] // a direct send became doubtful before it was queued
 	}
 	msg.QueuedAt, msg.Depth = time.Now().UTC(), len(b.st.Queue[to])+1
+	previousQueue, hadQueue := b.st.Queue[to]
+	previousPending := maps.Clone(b.st.SupervisePending)
 	b.st.Queue[to] = append(b.st.Queue[to], msg)
 	if msg.Tool == superviseTool {
 		if signals, structured := decodeDigestSignals(msg.Signals); structured {
@@ -764,7 +770,19 @@ func (s *Service) queueRelay(to string, msg relayMsg) int {
 			}
 		}
 	}
-	s.saveRelayLocked()
+	err := s.saveRelayLocked()
+	if msg.Tool == superviseTool && err != nil {
+		// A supervision queue is not admitted until its queue and outbox acknowledgment are durable together. Restore
+		// both memory forms so deliverDigest releases its reservation and leaves the turn untold for recovery (#5732).
+		if hadQueue {
+			b.st.Queue[to] = previousQueue
+		} else {
+			delete(b.st.Queue, to)
+		}
+		b.st.SupervisePending = previousPending
+		b.mu.Unlock()
+		return 0
+	}
 	n := len(b.st.Queue[to])
 	b.mu.Unlock()
 	go s.releaseHeldAsks(to)

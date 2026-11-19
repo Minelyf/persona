@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -319,6 +320,11 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		s.ackSupervisePending(list) // every signal no longer holds, as the in-memory digest already decided
 		return false
 	}
+	for i := range kept {
+		if s.noMainOriginFallback(here, to, kept[i]) {
+			kept[i].OriginOnly = true // persist the route's lack of acceptance authority with the signal itself
+		}
+	}
 	holds := kept
 	entries, kept, rollback, err := s.reserveSupervision(ctx, entries, kept, now)
 	if err != nil {
@@ -346,7 +352,15 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 			return
 		}
 		if background {
-			s.rememberLegacyBackground(to, kept)
+			// Exclude only the no-main Origin fallback: it tells the dispatcher without making it the acceptance
+			// authority. Older automatic background routes can have an empty To too and keep their grant (#5732).
+			legacy := make([]superviseSignal, 0, len(kept))
+			for _, g := range kept {
+				if !g.OriginOnly && !s.noMainOriginFallback(here, to, g) {
+					legacy = append(legacy, g)
+				}
+			}
+			s.rememberLegacyBackground(to, legacy)
 		}
 		s.ackSupervisePending(list)
 		s.ackSupervisionDedupLocked(ctx, delivered)
@@ -523,10 +537,12 @@ func (s *Service) replaceQueuedSupervise(to string, msg relayMsg) bool {
 		return false
 	}
 	q := b.st.Queue[to]
+	previousPending := maps.Clone(b.st.SupervisePending)
 	for i := range q {
 		// A withdrawn or doubtful head still owns the outcome of its original send. Let drainRelays check its durable
 		// doubt and remove it before a replacement can replay any of the same signals under a new message id (#5732).
 		if q[i].Tool == superviseTool && !q[i].Withdrawn && q[i].DoubtedAt.IsZero() && (i > 0 || !b.draining[to]) {
+			previous := q[i]
 			q[i] = msg.replacing(q[i], time.Now()) // it waited since then (relay_presence.go)
 			if signals, structured := decodeDigestSignals(msg.Signals); structured {
 				ackSupervisePendingLocked(b.st.SupervisePending, signals)
@@ -534,7 +550,13 @@ func (s *Service) replaceQueuedSupervise(to string, msg relayMsg) bool {
 					b.st.SupervisePending = nil
 				}
 			}
-			s.saveRelayLocked()
+			if err := s.saveRelayLocked(); err != nil {
+				// The old queue entry and every outbox predecessor stay exactly as they were. The caller's fallback
+				// must restore its reservation instead of finalizing new signals that were never admitted (#5732).
+				q[i] = previous
+				b.st.SupervisePending = previousPending
+				return false
+			}
 			return true
 		}
 	}

@@ -173,6 +173,12 @@ func (s *Service) recheckQueuedDigest(ctx context.Context, to string, msg relayM
 
 // Read the payload that is actually queued, rather than the last in-memory digest (which may have drained).
 func (s *Service) queuedDigestSignals(to string) []superviseSignal {
+	// A pre-signals relay has no structured payload, so retain the legacy book's fallback without nesting the locks in
+	// the opposite order from signalReplacing (supervise.mu → relays.mu). The queue is still checked under relays.mu;
+	// if it changed meanwhile, its current structured payload wins and this snapshot is not used.
+	s.supervise.mu.Lock()
+	legacy := slices.Clone(s.supervise.queued[to])
+	s.supervise.mu.Unlock()
 	b := &s.relays
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -188,10 +194,7 @@ func (s *Service) queuedDigestSignals(to string) []superviseSignal {
 			_ = json.Unmarshal([]byte(msg.Signals), &list)
 			return list
 		}
-		s.supervise.mu.Lock()
-		list = slices.Clone(s.supervise.queued[to])
-		s.supervise.mu.Unlock()
-		return list
+		return legacy
 	}
 	return nil
 }

@@ -453,7 +453,7 @@ fun TodosScreen(
                 val directionRows = if (tree == null) emptyList() else {
                     val placed = triaged.sections.values.flatten()
                         .flatMap { group -> group.members.map { member -> member.id to (member to group.triage.getValue(member.id)) } }.toMap()
-                    tree.todoRows(placed) { (_, triage) -> triage.section == TriageSection.Done }
+                    tree.todoRows(placed) { (_, triage) -> triage.section == TriageSection.Done || triage.section == TriageSection.Cancelled }
                 }
                 if (tree != null) {
                     for ((direction, rows) in directionRows) {

@@ -93,7 +93,7 @@ describe("Parked grouping", () => {
   it("keeps a seen supervisor review open without calling it an external wait", () => {
     const todo = task("review", { pr_url: url, pr_status: facts, seen_at: "2026-11-16T12:00:00Z",
       supervision: { supervisor: "main", state: "pending_review" } });
-    expect(triage(todo, lookup, now)).toMatchObject({ section: "other", rule: "rest" });
+    expect(triage(todo, lookup, now)).toMatchObject({ section: "just_done", rule: "finished_unseen" });
     expect(triageTodos([todo], lookup, now).open).toBe(1);
     const entries = assistantEntries({ conversation: "main", main: "main", todos: [todo], sessions: [worker], interactions: [], plans: {}, feed: [], now });
     expect(entries.parked).toEqual([]);

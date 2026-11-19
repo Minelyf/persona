@@ -150,6 +150,9 @@ iOS implementation (#4670): Settings › hub › Addresses keeps a paired hub's 
   - **Answers**: a healthy hub answer (`ok`), with the paired hub's `hub_id` on an added address.
   - **Certificate not trusted**: TLS failed the system's trust (an unknown root such as the managed self-signed certificate above, a wrong host name, an
     expired certificate). Kept apart from the rest: without pinning the phone can't tell the hub's own self-signed certificate from someone else's.
+    Checked on an iOS 27.0 simulator against local endpoints: a self-signed certificate, an unknown root, a wrong host name and an expired certificate
+    all fail as `NSURLErrorServerCertificateUntrusted` (-1202), the request and the socket alike; a server that hangs up during the handshake, or a
+    plain HTTP port asked for HTTPS, fails as `NSURLErrorSecureConnectionFailed` (-1200) without the server's trust, which counts as Couldn't connect.
   - **Not your hub**: an added address answered with another `hub_id`. On a private address (loopback, LAN IPv4, link-local, ULA, `localhost`, `.local`;
     `HubAddressScope`) it counts as Couldn't connect, since there it only says another device has that address on this network, unless every address
     the attempt tries is private, as Android does (`HubRouteSelector.worst`). The paired address is not checked here: another `hub_id` there is left to the hello.

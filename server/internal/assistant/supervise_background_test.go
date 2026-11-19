@@ -76,7 +76,7 @@ func TestMainSupervisesWithoutStartingBackground(t *testing.T) {
 	agentTurn(s, f, proto.StatusDone, "做完了，PR https://github.com/o/r/pull/7 已合并", 0)
 	waitFor(t, "main's supervision message", func() bool { return len(f.noticesTo("conv1")) == 1 })
 	n := f.noticesTo("conv1")[0]
-	for _, want := range []string{"📋 督办", "hub 判断做完了，等你验收", "pull/7"} {
+	for _, want := range []string{"📋 督办", "待逐项复核，不代表完成", "pull/7"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("main's message lacks %q:\n%s", want, n)
 		}
@@ -326,7 +326,7 @@ func TestLegacyBackgroundQueuedNoticeSurvivesRestart(t *testing.T) {
 	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
 	// A pre-upgrade queue entry has no structured signals and no separately persisted grant. Only its entry subject is
 	// an assignment; an unrelated task linked from the evidence must not acquire closeout permission after a restart.
-	legacyText := "1. 任务「整理材料」（" + todo.ID + "）：hub 判断做完了，等你验收；证据」（todo_unrelated）：说明"
+	legacyText := "1. 任务「整理材料」（" + todo.ID + "）：待逐项复核，不代表完成；证据」（todo_unrelated）：说明"
 	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: legacyText, At: time.Now()}); n != 1 {
 		t.Fatalf("queue the legacy notice: %d", n)
 	}
@@ -480,7 +480,10 @@ func TestMainSupervisesOwnTasksSettingLeavesRouteWithMain(t *testing.T) {
 	}
 	agentTurn(s, f, proto.StatusWorking, "", 0)
 	agentTurn(s, f, proto.StatusDone, "做完了", 0)
-	waitFor(t, "main's message", func() bool { return len(f.noticesTo("conv1")) == 1 })
+	waitFor(t, "the main conversation's message", func() bool { return len(f.noticesTo("conv1")) == 1 })
+	if n := f.noticesTo("conv1")[0]; strings.Contains(n, "后台督办") || !strings.Contains(n, "待逐项复核，不代表完成") {
+		t.Fatalf("the main conversation's message:\n%s", n)
+	}
 	if got := s.settings(ctx).BackgroundSupervisor; got != "" || len(conversationStarts(f)) != 0 {
 		t.Fatalf("a background supervisor %q was made with the setting on", got)
 	}
@@ -498,6 +501,33 @@ func TestMainSupervisesOwnTasksSettingLeavesRouteWithMain(t *testing.T) {
 	}
 	if cur := todoNow(s, todo.ID); cur.DoneAt != nil || cur.Supervision.Supervisor != "conv1" {
 		t.Fatalf("the task changed with the setting: %+v %+v", cur, cur.Supervision)
+	}
+}
+
+// A background supervisor that cannot start drops nothing: its tasks' signals go to the main conversation, and the
+// start is not tried again at once.
+func TestBackgroundSupervisorThatCannotStartFallsBackToMain(t *testing.T) {
+	s, f, _ := newBackgroundService(t)
+	ctx := context.Background()
+	f.mu.Lock()
+	f.onAssistantSend = func(f *fakeHub, a map[string]any) {
+		f.failAssistant = nil
+		if id, _ := a["session_id"].(string); id == "" {
+			f.failAssistant = errors.New("claude is not signed in")
+		}
+	}
+	f.mu.Unlock()
+	agentTurn(s, f, proto.StatusWorking, "", 0)
+	agentTurn(s, f, proto.StatusDone, "做完了", 0)
+	waitFor(t, "the main conversation's message", func() bool { return len(f.noticesTo("conv1")) == 1 })
+	if n := f.noticesTo("conv1")[0]; !strings.Contains(n, "待逐项复核，不代表完成") || strings.Contains(n, "你是后台督办对话") {
+		t.Fatalf("the main conversation's message:\n%s", n)
+	}
+	if got := s.settings(ctx).BackgroundSupervisor; got != "" {
+		t.Fatalf("a background supervisor %q is kept though it did not start", got)
+	}
+	if id, _ := s.ensureBackground(ctx); id != "" {
+		t.Fatalf("the start was tried again at once: %q", id)
 	}
 }
 

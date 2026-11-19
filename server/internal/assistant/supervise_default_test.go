@@ -356,10 +356,11 @@ func (s *relayWriteWatch) PutSetting(ctx context.Context, key string, v any) err
 func relayHasSignal(state relayState, g superviseSignal) bool {
 	for _, queue := range state.Queue {
 		for _, msg := range queue {
-			if msg.Signals == nil {
+			signals, structured := decodeDigestSignals(msg.Signals)
+			if !structured {
 				continue
 			}
-			for _, queued := range *msg.Signals {
+			for _, queued := range signals {
 				if queued.id() == g.id() && queued.Key == g.Key {
 					return true
 				}
@@ -408,7 +409,7 @@ func TestDetachedQueueHeadStillStopsByTodoID(t *testing.T) {
 	s, _, todo := newSupervisedService(t)
 	empty := []superviseSignal{}
 	s.queueRelay("side1", relayMsg{From: superviseTool, Tool: superviseTool, Text: "detached review for " + todo.ID,
-		Signals: &empty, At: time.Now()})
+		Signals: encodeDigestSignals(empty), At: time.Now()})
 	n, taken := s.dropQueuedSupervisionTasks("side1", map[string]bool{todo.ID: true}, []Todo{todo})
 	if n != 1 || len(taken) != 1 || taken[0].Todo != todo.ID || taken[0].Kind != sigUnjudged {
 		t.Fatalf("detached /stop drop = %d, %+v", n, taken)

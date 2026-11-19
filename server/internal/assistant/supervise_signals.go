@@ -44,8 +44,9 @@ var (
 	// superviseEvery is the least time between two supervision messages; superviseUrgentEvery when one waits on a decision.
 	superviseEvery       = 10 * time.Minute
 	superviseUrgentEvery = 2 * time.Minute
-	// superviseNoMainLogEvery is how often a digest that still finds no main conversation says so in the log: the
-	// watch's every pass (superviseTick) tries again, and each said it once before.
+	// superviseNoMainLogEvery is how often a digest that still leaves signals waiting for a main conversation (none is
+	// set and no conversation that dispatched them can be told, or no machine) says so in the log: the watch's every
+	// pass (superviseTick) tries again, and each said it once before.
 	superviseNoMainLogEvery = time.Hour
 	// superviseNeedsAfter is how long an agent waits for an answer before the supervisor hears of it (the user was
 	// pushed; a quiet task's at once: the user was not).
@@ -173,8 +174,8 @@ type superviseBook struct {
 
 	resuming map[[2]string]struct{} // fingerprints of offline leader sends in flight, under dedupMu
 
-	// noMainSince is when digests started finding no main conversation (zero: the last one found it), noMainLogged
-	// when that was last logged (sendDigest).
+	// noMainSince is when digests started leaving signals waiting for a main conversation (zero: the last one left none
+	// waiting), noMainLogged when that was last logged (sendDigest).
 	noMainSince, noMainLogged time.Time
 	hold                      map[string]time.Time // conversation → when a supervision message went in: its turn's finish is not pushed
 	visible                   map[string]bool      // an explicit user action makes the current triage turn visible
@@ -237,8 +238,11 @@ func (s *Service) restoreSupervisePending(ctx context.Context) {
 	var queued []superviseSignal
 	for _, queue := range r.st.Queue {
 		for _, msg := range queue {
-			if msg.Tool == superviseTool && msg.Signals != nil {
-				queued = append(queued, (*msg.Signals)...)
+			if msg.Tool != superviseTool {
+				continue
+			}
+			if signals, structured := decodeDigestSignals(msg.Signals); structured {
+				queued = append(queued, signals...)
 			}
 		}
 	}
@@ -363,12 +367,13 @@ func (s *Service) startUnknownArmed(g superviseSignal) bool {
 	armed = pendingMatch(r.st.SupervisePending[g.id()])
 	for _, queue := range r.st.Queue {
 		for _, msg := range queue {
-			if msg.Signals == nil {
+			signals, structured := decodeDigestSignals(msg.Signals)
+			if !structured {
 				// A legacy text queue has no structured key: only its unambiguous provisional-start text is retractable.
 				armed = armed || legacyStartUnknownMessage(msg.Text, g.Todo)
 				continue
 			}
-			for _, candidate := range *msg.Signals {
+			for _, candidate := range signals {
 				armed = armed || exact(candidate)
 			}
 		}
@@ -532,13 +537,14 @@ func (s *Service) retractSupervisedIdle(ctx context.Context, todoID string) bool
 		}
 		for _, queue := range r.st.Queue {
 			for _, msg := range queue {
-				if msg.Signals == nil {
+				signals, structured := decodeDigestSignals(msg.Signals)
+				if !structured {
 					if legacyIdleMessage(msg.Text, todoID) {
 						collect(superviseSignal{Todo: todoID, Kind: sigIdle, Key: "legacy-idle@" + todoID, At: msg.At})
 					}
 					continue
 				}
-				for _, g := range *msg.Signals {
+				for _, g := range signals {
 					collect(g)
 				}
 			}

@@ -340,9 +340,10 @@ func (s *Service) dropQueuedSupervisionMatchingAtomic(conversation string, ids m
 		target := false
 		remaining := make([]superviseSignal, 0) // non-nil: an empty list must persist as [], not legacy null
 		// An empty detached list has no signals to replay; its text still identifies tasks for a selective /stop.
-		structured := m.Signals != nil && len(*m.Signals) > 0
+		signals, structuredPayload := decodeDigestSignals(m.Signals)
+		structured := structuredPayload && len(signals) > 0
 		if structured {
-			for _, g := range *m.Signals {
+			for _, g := range signals {
 				selected := ids[g.Todo]
 				if exact != nil {
 					selected = g.Todo == exact.Todo && g.Kind == exact.Kind && g.Key == exact.Key
@@ -357,7 +358,7 @@ func (s *Service) dropQueuedSupervisionMatchingAtomic(conversation string, ids m
 		} else if exact != nil {
 			legacy := exact.Kind == sigUnjudged && legacyStartUnknownMessage(m.Text, exact.Todo) ||
 				exact.Kind == sigIdle && legacyIdleMessage(m.Text, exact.Todo)
-			if m.Signals == nil && legacy {
+			if !structuredPayload && legacy {
 				target = true
 				taken = append(taken, *exact)
 			}
@@ -391,7 +392,7 @@ func (s *Service) dropQueuedSupervisionMatchingAtomic(conversation string, ids m
 			// drainRelays checks any durable doubt, then replays them only if the original did not land (#5732).
 			if target {
 				m.Withdrawn = true
-				m.Signals = &remaining
+				m.Signals = encodeDigestSignals(remaining)
 				changed = true
 			}
 			kept = append(kept, m)

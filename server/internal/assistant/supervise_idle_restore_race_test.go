@@ -31,8 +31,8 @@ func TestWorkingSerializesIdleRetractionWithPendingRestore(t *testing.T) {
 	}
 	simulateSupervisionRestart(t, s)
 
-	// restoreSupervisePending has read pendingLoaded and is waiting for the relay lock. Once it has the relay lock its
-	// next wait is supervise.mu. Queue working first on supervise.mu so the broken order inserts the old snapshot last.
+	// restoreSupervisePending holds pendingLoadMu while it waits for the relay lock and through its later book insertion.
+	// Working must wait for that same mutex, so its retraction cannot run before the older snapshot has been merged.
 	s.relays.mu.Lock()
 	restoreDone := make(chan struct{})
 	go func() {
@@ -40,16 +40,13 @@ func TestWorkingSerializesIdleRetractionWithPendingRestore(t *testing.T) {
 		close(restoreDone)
 	}()
 	waitForSuperviseMutex(t, "restoreSupervisePending", &s.relays.mu)
-	s.supervise.mu.Lock()
 	workingDone := make(chan struct{})
 	go func() {
 		s.supervisedWorking(ctx, todoNow(s, todo.ID))
 		close(workingDone)
 	}()
-	waitForSuperviseMutex(t, "supervisedWorking", &s.supervise.mu)
+	waitForSuperviseMutex(t, "supervisedWorking", &s.supervise.pendingLoadMu)
 	s.relays.mu.Unlock()
-	waitForSuperviseMutex(t, "restoreSupervisePending", &s.supervise.mu)
-	s.supervise.mu.Unlock()
 	<-restoreDone
 	<-workingDone
 

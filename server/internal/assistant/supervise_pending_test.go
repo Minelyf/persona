@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,6 +247,98 @@ func TestWorkingRetractsQueuedIdleAcrossRestart(t *testing.T) {
 	})
 	if got := strings.Join(f.noticesTo("conv1"), "\n"); !strings.Contains(got, newer.Detail) {
 		t.Errorf("the post-resume idle was not deliverable:\n%s", got)
+	}
+}
+
+// A resume without a review or owner wait must retire the same durable idle forms. The early return in supervisedWorking
+// used to leave the queued head and the turn-ledger signal untouched even though it removed the outbox entry (#5732).
+func TestWorkingRetractsQueuedIdleWithoutOwnerWait(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, _, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	ctx := context.Background()
+	old := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "ordinary-old-stop", Detail: "ordinary old idle", At: time.Now()}
+	other := superviseSignal{Todo: todo.ID, Kind: sigStalled, Key: "ordinary-other", Detail: "ordinary other", At: time.Now()}
+	markLeaderTurnSignalled(t, s, old)
+	if !s.queueDigest("conv1", relayMsg{Tool: superviseTool, Text: old.Detail + "; " + other.Detail, At: time.Now()},
+		[]superviseSignal{old, other}, time.Now(), time.Time{}) {
+		t.Fatal("the ordinary idle and its mixed-digest control were not admitted to the durable queue")
+	}
+	resumed := todoNow(s, todo.ID)
+	resumed.Supervision.State = ""
+	resumed.Supervision.Waits = nil
+	s.supervisedWorking(ctx, resumed)
+	for _, msg := range queuedRelays(s, "conv1") {
+		if strings.Contains(msg.Text, old.Detail) {
+			t.Errorf("ordinary resumed work left the old idle in the durable relay queue: %+v", msg)
+		}
+	}
+	if entry, ok := s.turnOf(ctx, todo.ID); !ok || entry.Signal == nil || entry.Signal.Told == nil {
+		t.Errorf("ordinary resumed work did not persist the old idle's told receipt: %+v", entry)
+	}
+	if got := storedSupervisePending(t, s)[other.id()]; got.Key != other.Key {
+		t.Errorf("ordinary idle retraction dropped the mixed-digest control: %+v", got)
+	}
+	fresh := old
+	fresh.Key, fresh.Detail = "ordinary-new-stop", "ordinary new idle"
+	s.signal(fresh)
+	if got := storedSupervisePending(t, s)[fresh.id()]; got.Key != fresh.Key {
+		t.Errorf("ordinary post-resume idle was incorrectly suppressed: %+v", got)
+	}
+}
+
+// relayPutHook lets a test pause one durable relay write without a production-only hook.
+type relayPutHook struct {
+	Store
+	hook func(relayState)
+}
+
+func (st *relayPutHook) PutSetting(ctx context.Context, key string, value any) error {
+	if key == relayKey && st.hook != nil {
+		st.hook(value.(relayState))
+	}
+	return st.Store.PutSetting(ctx, key, value)
+}
+
+// A newer idle admitted during the old one's final relay write must survive working's remaining cleanup (#5732).
+func TestWorkingKeepsIdleAdmittedDuringOldIdleRetraction(t *testing.T) {
+	st := &relayPutHook{Store: planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}}
+	s, _, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	ctx := context.Background()
+	old := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "retraction-race-old", Detail: "old idle", At: time.Now()}
+	s.signal(old)
+	resumed := todoNow(s, todo.ID)
+	resumed.Supervision.State, resumed.Supervision.Waits = "", nil
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	st.hook = func(state relayState) {
+		if current, exists := state.SupervisePending[old.id()]; !exists || current.Key != old.Key {
+			once.Do(func() { close(reached); <-release })
+		}
+	}
+	workingDone := make(chan struct{})
+	go func() { s.supervisedWorking(ctx, resumed); close(workingDone) }()
+	<-reached // the old exact-key retraction now holds relays.mu in its final write
+
+	// Hold supervise.mu until the new signal queues on it. It then holds that mutex through its durable write, so the
+	// old retraction cannot finish before the new generation lands in both pending forms.
+	s.supervise.mu.Lock()
+	fresh := old
+	fresh.Key, fresh.Detail = "retraction-race-new", "new idle"
+	freshDone := make(chan struct{})
+	go func() { s.signal(fresh); close(freshDone) }()
+	waitForSuperviseMutex(t, "signalReplacing", &s.supervise.mu)
+	s.supervise.mu.Unlock()
+	waitForSuperviseMutex(t, "updateSupervisePending", &s.relays.mu)
+	close(release)
+	<-workingDone
+	<-freshDone
+	if got := storedSupervisePending(t, s)[fresh.id()]; got.Key != fresh.Key {
+		t.Errorf("working's old-idle cleanup erased the newer durable idle: %+v", got)
+	}
+	if !idlePendingForReplayTest(s, fresh) {
+		t.Error("working's old-idle cleanup erased the newer in-memory idle")
 	}
 }
 
@@ -581,7 +674,7 @@ func TestQueuedSupervisionAndOutboxAreAtomic(t *testing.T) {
 	g := superviseSignal{Todo: todo.ID, Kind: sigStalled, Key: "queued-once", At: time.Now()}
 	s.signal(g)
 	signals := []superviseSignal{g}
-	if s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: "queued", Signals: &signals, At: time.Now()}) != 1 {
+	if s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: "queued", Signals: encodeDigestSignals(signals), At: time.Now()}) != 1 {
 		t.Fatal("the supervision message was not queued")
 	}
 	if got := storedSupervisePending(t, s); len(got) != 0 {

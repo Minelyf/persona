@@ -48,6 +48,15 @@ func (s *Service) taskNoticeOf(ctx context.Context, t Todo, machine, state, ask,
 		if !t.Quiet {
 			if state == "failed" && t.Origin != "" {
 				s.notifyTaskFailed(ctx, t, machine, text)
+				if s.settings(ctx).Main == "" {
+					// Without main there is no new acceptance authority (#5732), but the dispatching conversation still
+					// hears the failed start through the ordinary no-main digest fallback (#10126).
+					key := text
+					if attempt > 0 {
+						key = fmt.Sprintf("retry %d: %s", attempt, text)
+					}
+					s.signal(superviseSignal{Todo: t.ID, Kind: sigFailed, Key: key, Detail: text, At: time.Now()})
+				}
 			}
 			return
 		}
@@ -335,14 +344,16 @@ func (s *Service) notifyTaskNeedsUser(ctx context.Context, t Todo, work time.Tim
 // and a parked task is parked no longer (someone sent its agent something: it is supervised as before, parked.go).
 func (s *Service) supervisedWorking(ctx context.Context, t Todo) {
 	s.autoReviewWorking(ctx, t)
-	// The previous stop is moot even when no review state or owner wait remains to take the update path below. Forget
-	// its durable-only form before a later restore; a stop raised by the new work has another key and is unaffected.
+	// Retire the previous stop before any early return or outbox deletion. Exact-key retraction owns every idle form;
+	// a later signal-id sweep could erase a newer idle admitted while the old one's final write was in flight.
+	if !s.retractSupervisedIdle(ctx, t.ID) {
+		s.logf("task %s: could not retire the previous stretch's idle; its durable forms stay for retry", t.ID)
+	}
 	b := &s.supervise
 	b.mu.Lock()
 	delete(b.pending, t.ID+"|"+sigReview)
-	delete(b.pending, t.ID+"|"+sigIdle)
 	delete(b.pending, t.ID+"|"+sigParkedDue)
-	s.forgetSupervisePending(t.ID+"|"+sigReview, t.ID+"|"+sigIdle, t.ID+"|"+sigParkedDue)
+	s.forgetSupervisePending(t.ID+"|"+sigReview, t.ID+"|"+sigParkedDue)
 	b.mu.Unlock()
 	if st := t.Supervision.state(t); st != reviewPending && st != reviewParked && (t.Supervision == nil || t.Supervision.Waits == nil) {
 		return
@@ -364,9 +375,6 @@ func (s *Service) supervisedWorking(ctx context.Context, t Todo) {
 		return true
 	}); err != nil {
 		s.logf("task %s: supervision: %v", t.ID, err)
-	}
-	if !s.retractSupervisedIdle(ctx, t.ID) {
-		s.logf("task %s: could not retire the previous stretch's idle; its durable forms stay for retry", t.ID)
 	}
 }
 

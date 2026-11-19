@@ -331,7 +331,7 @@ func TestLegacyBackgroundQueuedNoticeSurvivesRestart(t *testing.T) {
 		t.Fatalf("queue the legacy notice: %d", n)
 	}
 	structured := []superviseSignal{{Todo: "todo_structured"}}
-	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: "structured notice", Signals: &structured, At: time.Now()}); n != 2 {
+	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: "structured notice", Signals: encodeDigestSignals(structured), At: time.Now()}); n != 2 {
 		t.Fatalf("queue the structured notice: %d", n)
 	}
 

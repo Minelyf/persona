@@ -249,15 +249,17 @@ func validSessionID(id string) bool { return sessionIDRe.MatchString(id) }
 // --- messages between conversations ---
 
 type relayMsg struct {
+	// OnceID preserves a supervision relay's delivery identity when its queued text is refreshed.
+	OnceID string `json:"once_id,omitempty"`
+	// Signals is the structured JSON content of a queued supervision message. It stays comparable with the relay and lets
+	// /stop remove one task and regather the others after restart; older messages without it use their embedded task ids.
+	Signals   string    `json:"signals,omitempty"`
 	From      string    `json:"from"`
 	FromTitle string    `json:"from_title"`
 	Tool      string    `json:"tool"`
 	Text      string    `json:"text"`
 	Hop       int       `json:"hop"`
 	At        time.Time `json:"at"`
-	// Signals is the structured content of a queued supervision message. It lets /stop remove one task and regather
-	// the others even after a restart lost supervise.queued; older messages without it use their embedded task ids.
-	Signals *[]superviseSignal `json:"signals,omitempty"`
 	// Withdrawn marks a supervision message whose remaining text must not be sent or retried. A send already in flight
 	// still finishes, but its failed queue head and every later restart drain drop it instead (#5732).
 	Withdrawn bool `json:"withdrawn,omitempty"`
@@ -291,6 +293,11 @@ type relayMsg struct {
 	Answer bool `json:"answer,omitempty"`
 	// Due: past the relay rate it waits for the window (relayAdmit, #10400) and goes in no sooner than this, once.
 	Due time.Time `json:"due,omitzero"`
+	// TriedAt is the start of the earliest try that may have gone in. Save it before sending from the queue.
+	// Looks and LookAfter keep the transcript check budget and schedule across manager restarts.
+	TriedAt   time.Time `json:"tried_at,omitzero"`
+	Looks     int       `json:"looks,omitempty"`
+	LookAfter time.Time `json:"look_after,omitzero"`
 	// Quote: the owner's message the sender carried (conversation_send / conversation_new quote), as the hub verified
 	// it (relay_quote.go, #3822). A version that does not know it drops it on its next save: the message then goes
 	// without the owner's words, as before.
@@ -332,6 +339,7 @@ type relayBook struct {
 	st       relayState
 	sent     map[[2]string][]time.Time // (from, to) -> when; in memory: a restart only resets the rate
 	draining map[string]bool
+	doubted  map[string]time.Time   // by relayMsgID: when a try that ended in doubt began, its line not found then (relay_once.go)
 	holds    map[string]*time.Timer // by conversation: drains its queue again when the hold for the owner ends
 	stuck    map[string]relayMsg    // by conversation: the message that could not go in at the last drain (pickLocked)
 	// failedAt: by conversation, when a delivery into it last failed because it did not take the message (it did not
@@ -339,7 +347,6 @@ type relayBook struct {
 	// conversation that cannot start is not cold-started again on every session list (#10194). In memory: a restart
 	// tries at once.
 	failedAt map[string]time.Time
-	doubted  map[string]time.Time // by relayMsgID: when a try that ended in doubt began, its line not found then (relay_once.go)
 	// ownerTurns: the conversations whose round the owner is on, in memory only (#6394). While one is set, every
 	// queued message waits, whatever its rank: the owner's own message always goes before the queue. A restart falls
 	// back on the persisted Spoke presence window (relay_presence.go).
@@ -396,8 +403,8 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 			if msg.Tool != superviseTool {
 				continue
 			}
-			if msg.Signals != nil {
-				for _, g := range *msg.Signals {
+			if signals, structured := decodeDigestSignals(msg.Signals); structured {
+				for _, g := range signals {
 					if g.Todo != "" {
 						rs.LegacyBackground[conversation+"\x00"+g.Todo] = true
 					}
@@ -413,6 +420,7 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 	}
 	b.st, b.loaded = rs, true
 	b.sent, b.draining, b.replacing, b.holds = map[[2]string][]time.Time{}, map[string]bool{}, map[string]bool{}, map[string]*time.Timer{}
+	b.doubted = map[string]time.Time{}
 	b.woke = map[string]time.Time{}
 	b.quoted, b.roundsFrom = map[string]time.Time{}, map[string]time.Time{}
 	b.stuck = map[string]relayMsg{}
@@ -421,10 +429,10 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 	return true
 }
 
-func (s *Service) saveRelayLocked() {
+func (s *Service) saveRelayLocked() error {
 	st := s.store()
 	if st == nil {
-		return
+		return nil
 	}
 	for id, hp := range s.relays.st.Hops {
 		if time.Since(hp.At) > relayHopMemory {
@@ -444,9 +452,11 @@ func (s *Service) saveRelayLocked() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := st.PutSetting(ctx, relayKey, s.relays.st); err != nil {
+	err := st.PutSetting(ctx, relayKey, s.relays.st)
+	if err != nil {
 		s.logf("save conversation relay: %v", err)
 	}
+	return err
 }
 
 // hopLocked is the hop a message from → to would be, and whether it is an answer: the first message back to the
@@ -745,11 +755,13 @@ func (s *Service) queueRelay(to string, msg relayMsg) int {
 	}
 	msg.QueuedAt, msg.Depth = time.Now().UTC(), len(b.st.Queue[to])+1
 	b.st.Queue[to] = append(b.st.Queue[to], msg)
-	if msg.Tool == superviseTool && msg.Signals != nil {
-		// Queue admission and outbox acknowledgment share this one durable write (#5732).
-		ackSupervisePendingLocked(b.st.SupervisePending, *msg.Signals)
-		if len(b.st.SupervisePending) == 0 {
-			b.st.SupervisePending = nil
+	if msg.Tool == superviseTool {
+		if signals, structured := decodeDigestSignals(msg.Signals); structured {
+			// Queue admission and outbox acknowledgment share this one durable write (#5732).
+			ackSupervisePendingLocked(b.st.SupervisePending, signals)
+			if len(b.st.SupervisePending) == 0 {
+				b.st.SupervisePending = nil
+			}
 		}
 	}
 	s.saveRelayLocked()
@@ -811,8 +823,12 @@ func (s *Service) deliverRelay(ctx context.Context, machine, to string, msg rela
 			Message: i18n.T(i18n.From(ctx), "rpc-errors.assistant_supervision_runtime")}
 	}
 	text := relayDeliveryText(msg)
-	params := map[string]any{"session_id": to, "text": text, "message_source": msg.source(), "resume_only": true, holdPushesParam: msg.Tool == superviseTool,
-		"once_id": relayMsgID(to, msg)} // every try of it under one id: the node sends it once (relay_once.go)
+	source, onceID := msg.source(), relayMsgID(to, msg)
+	if strings.TrimSpace(text) != "" && relayWords(text) == "" {
+		text = prompts.RelayMessageText(text, source, onceID)
+	}
+	params := map[string]any{"session_id": to, "text": text, "message_source": source, "resume_only": true, holdPushesParam: msg.Tool == superviseTool,
+		"once_id": onceID} // every try of it under one id: the node sends it once (relay_once.go)
 	if msg.Interject {
 		params["interject_background"] = true
 	}
@@ -914,19 +930,21 @@ func (s *Service) takeRelayHeadLocked(id string, msg relayMsg, stale, replayOK b
 	if len(q) == 0 || stale && q[0] != msg {
 		return nil // another writer changed the head: this copy neither removed it nor owns its replay
 	}
-	if replayOK && msg.Withdrawn && msg.Signals != nil {
-		// A withdrawn head never delivered this copy. Restore only its remaining signals, atomically with removing the
-		// head; a newer durable stretch of the same id still wins (#5732).
-		if b.st.SupervisePending == nil {
-			b.st.SupervisePending = map[string]superviseSignal{}
-		}
-		for _, g := range *msg.Signals {
-			cur, exists := b.st.SupervisePending[g.id()]
-			if !exists {
-				cur = g
-				b.st.SupervisePending[g.id()] = cur
+	if replayOK && msg.Withdrawn {
+		if signals, structured := decodeDigestSignals(msg.Signals); structured {
+			// A withdrawn head never delivered this copy. Restore only its remaining signals, atomically with removing the
+			// head; a newer durable stretch of the same id still wins (#5732).
+			if b.st.SupervisePending == nil {
+				b.st.SupervisePending = map[string]superviseSignal{}
 			}
-			replay = append(replay, cur)
+			for _, g := range signals {
+				cur, exists := b.st.SupervisePending[g.id()]
+				if !exists {
+					cur = g
+					b.st.SupervisePending[g.id()] = cur
+				}
+				replay = append(replay, cur)
+			}
 		}
 	}
 	b.st.Queue[id] = q[1:]
@@ -985,6 +1003,7 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 				return
 			}
 			msg := q[0]
+			original := msg
 			b.mu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			// A needs notice may have been answered on the phone after it queued while the agent's node still
@@ -1003,23 +1022,29 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 				}
 			}
 			var err error
-			tried := time.Now()
-			if !stale && !keep {
-				if s.relayLanded(machine, id, msg) {
-					err = nil // an earlier try in doubt went in after all: nothing is sent again
-				} else {
-					err = s.deliverRelay(ctx, machine, id, msg)
-					if err == nil {
-						s.forgetDoubt(id, msg)
-					} else if s.relaySettled(machine, id, msg, tried, err) {
-						err = nil
-					}
+			var retry time.Duration
+			landed := false
+			if !stale && !keep && !msg.TriedAt.IsZero() {
+				landed = s.lookForRelay(machine, id, &msg)
+				if !landed && msg.Looks < relayLookLimit {
+					keep, retry = true, relayLookGap
 				}
+			}
+			if !stale && !keep && !landed && msg.Tool == superviseTool {
+				var checked relayMsg
+				checked, stale, keep = s.recheckQueuedDigest(ctx, id, original)
+				if !stale && !keep {
+					original, msg = checked, checked
+				}
+			}
+			if !stale && !keep && !landed {
+				msg, retry, err = s.tryQueuedRelay(ctx, machine, id, &original)
+				keep = retry > 0
 			}
 			cancel()
 			// Withdrawing the text does not erase an earlier send's outcome. If its in-doubt line has since landed, the
 			// original mixed digest already carried every remaining signal, so none of them may be replayed (#5732).
-			landed := msg.Withdrawn && s.relayLanded(machine, id, msg)
+			landed = landed || msg.Withdrawn && s.relayLanded(machine, id, msg)
 			refused := supervisionRuntimeRefused(err)
 			b.mu.Lock()
 			delete(b.draining, id)
@@ -1036,7 +1061,14 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 				s.saveRelayLocked()
 				taken = true
 			} else {
+				if q := b.st.Queue[id]; len(q) > 0 && q[0] == original && q[0] != msg {
+					q[0] = msg
+					s.saveRelayLocked()
+				}
 				b.stuck[id] = msg // the next drain takes another one first (pickLocked)
+			}
+			if retry > 0 {
+				s.drainAfterLocked(machine, id, retry)
 			}
 			b.mu.Unlock()
 			if len(replay) > 0 {
@@ -1049,7 +1081,6 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 				s.publish(context.Background()) // it no longer shows waiting
 			}
 			if refused {
-				s.forgetDoubt(id, msg)
 				s.reportRuntimeRelayFailure(context.Background(), machine, id, msg)
 			}
 			if stale || refused {
@@ -1490,7 +1521,7 @@ func (s *Service) toolConversationSend(ctx context.Context, self string, args js
 		s.drainRelays(c.MachineID, []proto.Session{c}) // what may go goes; the rest when the hold for the user ends
 		return fmt.Sprintf("%q has messages waiting, or the user is talking in it: the message is queued (%d waiting) and goes in after them.%s", name, n, back), nil
 	}
-	if err := s.deliverRelay(ctx, c.MachineID, c.SessionID, msg); err != nil {
+	if err := s.tryDirectRelay(ctx, c.MachineID, c.SessionID, &msg); err != nil {
 		if !relayRetryable(err) {
 			return "", err // a refusal for good (its model or connection gone, a pick that cannot be read): fail closed
 		}

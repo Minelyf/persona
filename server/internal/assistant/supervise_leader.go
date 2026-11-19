@@ -170,8 +170,8 @@ func (s *Service) rehomeMainQueuedSignals(ctx context.Context, main string, todo
 			if msg.Tool != superviseTool {
 				continue
 			}
-			if msg.Signals != nil {
-				for _, g := range *msg.Signals {
+			if signals, structured := decodeDigestSignals(msg.Signals); structured {
+				for _, g := range signals {
 					if mainTasks[g.Todo] {
 						if byConversation[conversation] == nil {
 							byConversation[conversation] = map[string]bool{}

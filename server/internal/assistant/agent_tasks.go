@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 
+	"github.com/nwverse/persona/server/internal/identity"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -94,6 +95,33 @@ func (s *Service) superviseOpenTodoOf(ctx context.Context, machine, session stri
 		return Todo{}, false
 	}
 	return s.ensureSupervisor(ctx, t.ID)
+}
+
+// assistantsConversation: session c on machine is an assistant's conversation, never an agent to make a task of
+// (#10801). Its row's Assistant flag alone does not tell: the flag says it runs in this manager's assistant directory
+// on machine as the computer's home names it (isAssistantSession), and the node marks every conversation it keeps a
+// start record for started_by_persona. So it is one too when
+//   - it is a headless row in an assistant or health directory of any manager (identity.IsAssistantDir): another
+//     manager's, left on a computer that moved here (docs/assistant/managers.md "Moving a machine or a source"), or
+//     this one's, listed before the computer reported its home;
+//   - this manager's records say its assistant started it, wherever its row is listed (an older node's row at rest
+//     may follow a `cd`): the main conversation, the background supervisor, and every conversation with a noted origin
+//     (originSet: the apps' new chats and POST /api/v1/assistant/conversations, a channel's or an extension's /agent,
+//     scheduled tasks, guests, meeting rooms).
+//
+// Session.Assistant is left as it is: it decides the Chat tab and which conversations this assistant's tools reach,
+// and another manager's conversations are none of those.
+func (s *Service) assistantsConversation(ctx context.Context, machine string, c proto.Session) bool {
+	if s.isAssistantRow(c) || c.PaneID == "" && c.Cwd != "" && identity.IsAssistantDir(c.Cwd) {
+		return true
+	}
+	// Each on the machine it was recorded on: a session ID is only unique on its own computer.
+	if cfg := s.settings(ctx); c.SessionID != "" &&
+		(c.SessionID == cfg.Main && s.sameMachine(machine, cfg.mainRouteMachine()) ||
+			c.SessionID == cfg.BackgroundSupervisor && s.sameMachine(machine, cfg.BackgroundSupervisorMachineID)) {
+		return true
+	}
+	return s.originNoted(ctx, machine, c.SessionID)
 }
 
 // workTools are the tools that edit files, run commands or hand work to subagents, by the names Claude Code and

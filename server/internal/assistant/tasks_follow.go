@@ -478,6 +478,7 @@ func (s *Service) settleTurn(ctx context.Context, machine, sid, unheard string) 
 	}
 	var items []proto.Item
 	read := false
+	missedStart := false
 	if unheard != "" {
 		// Nothing above refuses the end. The turn must still be closed where the node has it now (the sweep's read is
 		// a moment old), no other look may be at it, and it must be one that gets a receipt, before a start nobody
@@ -498,9 +499,7 @@ func (s *Service) settleTurn(ctx context.Context, machine, sid, unheard string) 
 		}
 		if !heard {
 			s.logf("task %s: its agent %s/%s ended a turn with no start heard: taken up", t.ID, last.MachineID, short(last.SessionID))
-			if !s.taskStartMissed(ctx, t.ID) {
-				return settleRefused
-			}
+			missedStart = true
 		}
 	}
 	s.tasks.mu.Lock()
@@ -508,7 +507,7 @@ func (s *Service) settleTurn(ctx context.Context, machine, sid, unheard string) 
 	if !worked {
 		since = t.CreatedAt // a hub restarted since it began: count from the start
 	}
-	if r, ok := s.tasks.receipted[t.ID]; ok && !r.Before(since) {
+	if r, ok := s.tasks.receipted[t.ID]; ok && !r.Before(since) && !missedStart {
 		s.tasks.mu.Unlock()
 		return settleLater // this stretch has its receipt, or another look is writing it
 	}
@@ -520,6 +519,19 @@ func (s *Service) settleTurn(ctx context.Context, machine, sid, unheard string) 
 	s.taskJudging(t.ID, 1)
 	s.tasks.mu.Unlock()
 	defer s.taskJudging(t.ID, -1)
+	// Reserve first: resumed-work idle retraction may wait on the turn ledger, and a look must be able to observe this
+	// receipt while that ledger is held. The task's other work still happens before its receipt is written.
+	if missedStart {
+		if !s.taskStartMissed(ctx, t.ID) {
+			s.releaseReceipt(ctx, t.ID, machine, sid, reserved)
+			return settleRefused
+		}
+		// taskWorks timestamps the newly observed stretch. Read it now, as the pre-reservation call used to provide it,
+		// so taskWorkCurrent and autoFinishTask use that start rather than the task's creation time.
+		s.tasks.mu.Lock()
+		since, worked = s.tasks.working[t.ID]
+		s.tasks.mu.Unlock()
+	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	// The computer named is the one of the run the receipt names (#10465), not of the session whose end set this off:

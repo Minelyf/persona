@@ -82,55 +82,59 @@ struct ConnectionDetails: View {
         // What the title says; once it is back to normal, the live state (already connected again, or not yet shown).
         let phase = status.shown == .online ? status.phase : status.shown
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                HStack(spacing: Theme.Space.s) {
-                    if phase == .online {
-                        ThemedIcon(Theme.Icon.successFilled).foregroundStyle(Theme.positive)
-                        Text("Connected to Hub").font(Theme.Font.heading)
-                    } else {
-                        ConnectionLabel(phase: phase)
+            // Taller than the screen (many addresses, large text): it scrolls instead of being cut off (#11390).
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    HStack(spacing: Theme.Space.s) {
+                        if phase == .online {
+                            ThemedIcon(Theme.Icon.successFilled).foregroundStyle(Theme.positive)
+                            Text("Connected to Hub").font(Theme.Font.heading)
+                        } else {
+                            ConnectionLabel(phase: phase)
+                        }
+                    }
+                    Text(phase == .connecting && model.hubUpdate?.restarting == true
+                         ? String(localized: "The hub is updating to a new version. It'll disconnect briefly while it restarts, then reconnect automatically.")
+                         : Self.explanation(phase, stalled: model.live.stalled)).font(Theme.Font.secondary).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    let lines = Self.facts(phase: phase, link: model.live.state, nextTry: model.live.nextTry, lastOnline: status.lastOnline,
+                                           rtt: model.live.rtt, outbox: model.outboxCount, now: ctx.date, ssh: sshFact)
+                    if !lines.isEmpty {
+                        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                            ForEach(lines, id: \.self) { Text($0) }
+                        }
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    if let group = model.hub?.group { ConnectionAddresses(group: group) }
+                    if phase == .rejected {
+                        Button {
+                            Haptics.tap()
+                            pairing = true
+                        } label: {
+                            Text("Pair Again").lineLimit(1).frame(maxWidth: .infinity)
+                        }
+                        .themedButton(prominent: true)
+                        .disabled(model.hubSignOut != nil) // AppModel.pair would refuse it
+                        .padding(.top, Theme.Space.xxs)
+                        .accessibilityIdentifier("connection.repair")
+                    }
+                    if phase != .online {
+                        Button {
+                            Haptics.tap()
+                            model.live.reconnectNow()
+                            Task { await model.refresh() }
+                        } label: {
+                            Text("Retry Now [Connection Title 77c30e]").lineLimit(1).frame(maxWidth: .infinity)
+                        }
+                        .themedButton(prominent: phase != .rejected)
+                        .padding(.top, Theme.Space.xxs)
                     }
                 }
-                Text(phase == .connecting && model.hubUpdate?.restarting == true
-                     ? String(localized: "The hub is updating to a new version. It'll disconnect briefly while it restarts, then reconnect automatically.")
-                     : Self.explanation(phase, stalled: model.live.stalled)).font(Theme.Font.secondary).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                let lines = Self.facts(phase: phase, link: model.live.state, nextTry: model.live.nextTry, lastOnline: status.lastOnline,
-                                       rtt: model.live.rtt, outbox: model.outboxCount, now: ctx.date, ssh: sshFact)
-                if !lines.isEmpty {
-                    VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                        ForEach(lines, id: \.self) { Text($0) }
-                    }
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(.secondary)
-                }
-                if let group = model.hub?.group { ConnectionAddresses(group: group) }
-                if phase == .rejected {
-                    Button {
-                        Haptics.tap()
-                        pairing = true
-                    } label: {
-                        Text("Pair Again").lineLimit(1).frame(maxWidth: .infinity)
-                    }
-                    .themedButton(prominent: true)
-                    .disabled(model.hubSignOut != nil) // AppModel.pair would refuse it
-                    .padding(.top, Theme.Space.xxs)
-                    .accessibilityIdentifier("connection.repair")
-                }
-                if phase != .online {
-                    Button {
-                        Haptics.tap()
-                        model.live.reconnectNow()
-                        Task { await model.refresh() }
-                    } label: {
-                        Text("Retry Now [Connection Title 77c30e]").lineLimit(1).frame(maxWidth: .infinity)
-                    }
-                    .themedButton(prominent: phase != .rejected)
-                    .padding(.top, Theme.Space.xxs)
-                }
+                .padding(Theme.Space.l)
+                .scaledFrame(width: Theme.Size.box300, alignment: .leading)
             }
-            .padding(Theme.Space.l)
-            .scaledFrame(width: Theme.Size.box300, alignment: .leading)
+            .scrollBounceBehavior(.basedOnSize)
         }
         .sheet(isPresented: $pairing) { PairView() }
     }
@@ -249,18 +253,26 @@ struct ConnectionAddresses: View {
     private func row(_ line: HubAddressBoard.Line, inUse: Bool) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(verbatim: line.address).font(Theme.Font.caption).lineLimit(1).truncationMode(.middle)
-            HStack(spacing: Theme.Space.sm) {
-                if inUse {
-                    Chip(text: String(localized: "In Use [Hubs View 564c83]"), look: .outline)
-                } else if line.outcome != nil {
-                    Chip(text: line.word, look: .neutral)
-                    if let tried = line.tried { Text(tried).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1) }
-                } else {
-                    Text(line.word).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1)
+            if inUse {
+                Chip(text: String(localized: "In Use [Hubs View 564c83]"), look: .outline)
+            } else if line.outcome != nil {
+                // The outcome and its time on one line when they fit, else the time under it (long words, large text).
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.Space.sm) { outcome(line) }
+                    VStack(alignment: .leading, spacing: Theme.Space.xxs) { outcome(line) }
                 }
+            } else {
+                Text(line.word).font(Theme.Font.caption).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("connection.address")
+    }
+
+    @ViewBuilder private func outcome(_ line: HubAddressBoard.Line) -> some View {
+        Chip(text: line.word, look: .neutral)
+        if let tried = line.tried {
+            Text(tried).font(Theme.Font.caption).foregroundStyle(.secondary).fixedSize().accessibilityLabel(line.spokenTime ?? tried)
+        }
     }
 }

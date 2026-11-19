@@ -20,8 +20,10 @@ final class HubAddressBoard {
         let outcome: HubOutcome?
         /// The outcome's word, or that it was not tried yet.
         let word: String
-        /// When it was last tried, as the line says it; nil before the first try.
+        /// When it was last tried, as the line shows it (the time of day); nil before the first try.
         let tried: String?
+        /// The same, as VoiceOver says it ("Tried at …").
+        let spokenTime: String?
     }
 
     /// Each group's lines, in the order its addresses are tried.
@@ -105,10 +107,11 @@ final class HubAddressBoard {
         let new = (order[group] ?? []).map { url -> Line in
             let id = HubRoute.key(url)
             guard let k = known[id] else {
-                return Line(id: id, address: id, outcome: nil, word: String(localized: "Not Tried Yet [Hub Address]"), tried: nil)
+                return Line(id: id, address: id, outcome: nil, word: String(localized: "Not Tried Yet [Hub Address]"), tried: nil, spokenTime: nil)
             }
             let time = k.at.formatted(.dateTime.hour().minute().second())
-            return Line(id: id, address: id, outcome: k.outcome, word: k.outcome.title, tried: String(localized: "Tried at \(time)"))
+            return Line(id: id, address: id, outcome: k.outcome, word: k.outcome.title, tried: time,
+                        spokenTime: String(localized: "Tried at \(time)"))
         }
         if lines[group] != new { lines[group] = new }
     }

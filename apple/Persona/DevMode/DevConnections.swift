@@ -224,8 +224,8 @@ nonisolated struct ConnectionOpens: Sendable {
             opens = opens.filter { set.contains($0.key) }
             begin(now)
         case .tried(let group, let outcomes):
-            // A try without a network path says nothing about the hub.
-            guard counting, pathUp || opens[group] != nil else { return }
+            // A try without a network path says nothing about the hub, in an open or before one.
+            guard counting, pathUp else { return }
             open(group, now)
             opens[group]?.outcomes.formUnion(outcomes)
         case .connected(let group, let how):

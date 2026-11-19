@@ -125,7 +125,7 @@ struct HubOutcomeTests {
     // MARK: The race
 
     @Test func probesThePickerCutsShortAreUnknown() async {
-        let a = candidate("https://a.invalid", address: 0), b = candidate("https://b.invalid"), c = candidate("https://c.invalid")
+        let a = candidate("https://a.invalid", address: 0), b = candidate("https://b.invalid"), c = candidate("https://c.invalid", address: 2)
         // A answers at once; B never does: A is taken without waiting, B was cut short.
         let quick = await HubRoute.pickTried([a, b, c], grace: .seconds(30)) { cand in
             if cand.url == b.url { try? await Task.sleep(for: .seconds(30)); return .unreachable }
@@ -148,9 +148,10 @@ struct HubOutcomeTests {
         #expect(single.winner == nil && single.tried.map(\.outcome) == [.untrusted])
     }
 
-    /// The same choice as the yes / no `pick`, whatever the reason given for a failure.
+    /// The same choice as the yes / no `pick`, whatever the reason given for a failure. Every probe answers at once and
+    /// the grace is long, so the choice does not depend on how busy the machine is.
     @Test func pickTriedPicksAsPick() async {
-        let a = candidate("https://a.invalid", address: 0), b = candidate("https://b.invalid"), c = candidate("https://c.invalid")
+        let a = candidate("https://a.invalid", address: 0), b = candidate("https://b.invalid"), c = candidate("https://c.invalid", address: 2)
         let cases: [[URL: HubOutcome]] = [
             [a.url: .answers, b.url: .answers, c.url: .answers],
             [a.url: .untrusted, b.url: .answers, c.url: .answers],
@@ -158,8 +159,8 @@ struct HubOutcomeTests {
             [a.url: .unknown, b.url: .unreachable, c.url: .untrusted],
         ]
         for outcomes in cases {
-            let tried = await HubRoute.pickTried([a, b, c], grace: .milliseconds(50)) { outcomes[$0.url]! }
-            let picked = await HubRoute.pick([a, b, c], grace: .milliseconds(50)) { outcomes[$0.url]! == .answers }
+            let tried = await HubRoute.pickTried([a, b, c], grace: .seconds(30)) { outcomes[$0.url]! }
+            let picked = await HubRoute.pick([a, b, c], grace: .seconds(30)) { outcomes[$0.url]! == .answers }
             #expect(tried.picked == picked, "\(outcomes)")
         }
     }

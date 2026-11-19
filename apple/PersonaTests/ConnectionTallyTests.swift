@@ -123,10 +123,18 @@ struct ConnectionTallyTests {
         r.link(.tried(group: "g", [.unreachable]))
         clock.advance(10)
         r.lifecycle(active: false, device: .init())
+        // The third: the network goes away during the open; the tries after that say nothing about the hub.
+        r.lifecycle(active: true, device: .init())
+        r.path(wifi)
+        r.path(.init(type: "none"))
+        r.link(.tried(group: "g", [.unreachable]))
+        clock.advance(5)
+        r.lifecycle(active: false, device: .init())
         r.settle()
         let week = try #require(r.store.connectionTally(now: clock.now).weeks.only)
-        #expect(week.recordedSeconds == 10) // the second period was in front
-        #expect(week.notConnected.values.reduce(0, +) == 0 && week.connected.isEmpty)
+        #expect(week.recordedSeconds == 15) // the second and third periods were in front
+        #expect(week.notConnected == ["not_your_hub": 0, "certificate_not_trusted": 0, "couldnt_connect": 0, "unknown": 1])
+        #expect(week.connected.isEmpty)
     }
 
     @Test func weeksOlderThanEightAreDropped() {

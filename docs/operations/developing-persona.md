@@ -88,8 +88,9 @@ as its baseline (#11390). It is recorded only while the switch is on, like every
 switch off is asked in #11400 and not done.
 
 - **An open** is one period with the app in front, per hub group (Demo Mode left out), from the moment the phone has a
-  network path; it ends when the app leaves the front. A period already under way when the switch is turned on is not
-  counted (what happened before is not known): counting starts with the next one, or at launch with the switch on.
+  network path; it ends when the app leaves the front. Tries made while the phone has no network path are left out (they
+  say nothing about the hub). A period already under way when the switch is turned on is not counted (what happened
+  before is not known): counting starts with the next one, or at launch with the switch on.
 - **A week** is an ISO week in UTC (`2026-W47`, starting Monday 00:00 UTC). An open counts in the week it began.
 - **What decides an open**: what the group's tries came to while it lasted, from the attempts the app makes anyway (the
   route picker's probes, a tunnel's check of the direct way, the recheck of preferred addresses, and for a group with one

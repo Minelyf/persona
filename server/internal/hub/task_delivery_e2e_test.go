@@ -179,7 +179,7 @@ func TestTaskDeliveryTrackingOverTheBus(t *testing.T) {
 	if first.DoneAt != nil || first.Supervision == nil || first.Supervision.State != "pending_review" {
 		t.Fatalf("judged delivery closed or misplaced the task: %+v", first)
 	}
-	if d := digests("main-1")[0]; !strings.Contains(d, "已交付·待看") || !strings.Contains(d, "实现和验证均已交付") {
+	if d := digests("main-1")[0]; !strings.Contains(d, "待逐项复核，不代表完成") || !strings.Contains(d, "实现和验证均已交付") {
 		t.Fatalf("delivery digest:\n%s", d)
 	}
 	if text := snapshot(); !strings.Contains(text, "已交付·待看") {

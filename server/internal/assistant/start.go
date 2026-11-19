@@ -1099,6 +1099,7 @@ func (s *Service) messageParams(ctx context.Context, p SendParams, owner bool) (
 		s.humanSent.noteForReply(p.SessionID, id, sent)
 	}
 	if err == nil && said && owner {
+		s.endHeldChannelRuns(p.MachineID, p.SessionID)
 		s.ownerInterjects(p.SessionID, params)
 	}
 	return params, err
@@ -1180,7 +1181,7 @@ func (s *Service) sendParamsOwn(ctx context.Context, p SendParams) (map[string]a
 		}
 		return nil, false, badRequest(err, s.appLang(ctx, p.Lang)) // a typed model that is no id is the app's user's to read
 	}
-	if text, ok := params["text"].(string); ok {
+	if text, ok := params["text"].(string); ok && !p.VerbatimText {
 		text, own = s.fillWorkspaces(ctx, text) // an @-mentioned workspace: where it is and what worked there (workspace_mention.go)
 		if main {
 			left := s.handoffFor(ctx, p.SessionID, text)

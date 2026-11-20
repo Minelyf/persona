@@ -106,6 +106,9 @@ nonisolated enum TodoTriageLogic {
     /// No activity for this long, nothing of it running: shelved.
     static let shelveAfter: TimeInterval = 48 * 3600
 
+    /// The Assistant Finished projection's recency window. Concern visibility uses justDoneAfter instead.
+    static let justDone: TimeInterval = 24 * 3600
+
     /// A fresh closed concern stays visible for this long unless its report has been seen.
     static let justDoneAfter: TimeInterval = 24 * 3600
 
@@ -136,7 +139,7 @@ nonisolated enum TodoTriageLogic {
                 waiting = true
             }
         }
-        if interrupted { return .interrupted }
+        if interrupted, !waiting { return .interrupted }
         if limit { return .usageLimit }
         if unread { return .unread }
         if working { return .working }

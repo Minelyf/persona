@@ -312,6 +312,9 @@ func TestSendDigestRoutesOpenReviewForSupervision(t *testing.T) {
 	b.pending[g.id()] = g
 	b.last = time.Time{}
 	b.mu.Unlock()
+	// signal normally writes the durable outbox before sendDigest. This fixture seeds pending directly, so establish the
+	// same prerequisite rather than testing a direct delivery that production would never attempt (#5732).
+	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
 	s.sendDigest(context.Background())
 	if got := todoNow(s, todo.ID); got.Supervision.State != "" || len(got.Supervision.Reviews) != 0 || got.DoneAt != nil {
 		t.Fatalf("digest fabricated a park or closed the task: %+v", got)

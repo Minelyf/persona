@@ -369,6 +369,12 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		s.agentDecisionRepliesTold(ctx, kept)
 		s.turnsTold(ctx, holds) // and how a turn ended: kept went, the rest of them was said the same within the window
 	}()
+	if !s.supervisePendingDurably(kept) {
+		// The initial outbox write failed or the exact stretch was replaced before this delivery. Restore the in-memory
+		// retry and let restoreDigest retry persistence first; neither a direct send nor queue admission may be acknowledged.
+		s.restoreDigest(kept, now, prev)
+		return false
+	}
 	render := func(list []prompts.SuperviseEntry) string { return s.renderQueuedDigest(ctx, to, list) }
 	queued := s.queuedDigestSignals(to)
 	msg := relayMsg{From: superviseTool, FromTitle: "督办", Tool: superviseTool, At: now.UTC()}

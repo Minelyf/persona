@@ -77,6 +77,8 @@ func wakeRound(s *Service, gs ...superviseSignal) {
 			g.To = legacy
 		}
 		b.pending[g.id()] = g
+		// These fixtures bypass signal, so establish the durable outbox entry that sendDigest requires before delivery.
+		s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
 	}
 	b.last = time.Time{}
 	b.mu.Unlock()

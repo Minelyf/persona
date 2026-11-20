@@ -125,6 +125,7 @@ func TestMainOnlyDigestReconcilesLegacyQueue(t *testing.T) {
 			b.pending[g.id()] = g // no explicit legacy target: this is new work routed to main
 			b.last = time.Time{}
 			b.mu.Unlock()
+			s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
 			s.sendDigest(ctx)
 
 			waitFor(t, "the main-only signal", func() bool {

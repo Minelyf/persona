@@ -234,7 +234,7 @@ func TestAmbiguousPreUpgradeBackgroundQueueDefersToMain(t *testing.T) {
 	if ok, err := s.store().Setting(ctx, relayKey, &beforeRestart); err != nil || !ok {
 		t.Fatalf("read the pre-upgrade relay fixture: ok=%v err=%v", ok, err)
 	}
-	if beforeRestart.LegacyBackground["bg1\x00"+todo.ID] {
+	if legacyBackgroundGrant(beforeRestart.LegacyBackground, "bg1", todo.ID) {
 		t.Fatal("the pre-upgrade recovery fixture unexpectedly has a positive grant")
 	}
 	simulateSupervisionRestart(t, s)

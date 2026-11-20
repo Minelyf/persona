@@ -3,6 +3,7 @@ package assistant
 import (
 	"cmp"
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -170,8 +171,8 @@ type superviseBook struct {
 	asks          map[string]string            // todo → what its agent last asked (InteractionRaised)
 	last          time.Time                    // when the last supervision message went out
 	queued        map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
-	// legacyBackground: conversation + "\x00" + todo → an old notice reached this background conversation, so it may
-	// finish that task. relayState persists the same grant across manager restarts.
+	// legacyBackground: legacyBackgroundKey(conversation, todo) → an old notice reached this background conversation,
+	// so it may finish that task. relayState persists the same grant across manager restarts.
 	legacyBackground map[string]bool
 	timer            *time.Timer
 	timerAt          time.Time
@@ -279,6 +280,7 @@ func (s *Service) restoreSupervisePending(ctx context.Context) {
 
 // updateSupervisePending changes the durable outbox. Callers may hold supervise.mu: relay code never takes that lock
 // while holding relays.mu. Keeping this per signal, rather than replacing it from pending, preserves in-flight digests.
+// A failed write rolls the in-memory durable state back too; delivery checks supervisePendingDurably before it can ACK.
 func (s *Service) updateSupervisePending(change func(map[string]superviseSignal)) {
 	r := &s.relays
 	r.mu.Lock()
@@ -286,14 +288,39 @@ func (s *Service) updateSupervisePending(change func(map[string]superviseSignal)
 	if !s.relayLocked(context.Background()) {
 		return
 	}
-	if r.st.SupervisePending == nil {
-		r.st.SupervisePending = map[string]superviseSignal{}
+	previous := maps.Clone(r.st.SupervisePending)
+	next := maps.Clone(previous)
+	if next == nil {
+		next = map[string]superviseSignal{}
 	}
-	change(r.st.SupervisePending)
-	if len(r.st.SupervisePending) == 0 {
-		r.st.SupervisePending = nil
+	change(next)
+	if len(next) == 0 {
+		next = nil
 	}
-	s.saveRelayLocked()
+	r.st.SupervisePending = next
+	if err := s.saveRelayLocked(); err != nil {
+		r.st.SupervisePending = previous
+	}
+}
+
+// supervisePendingDurably reports whether every signal that is about to be delivered still has its exact durable
+// outbox entry. A failed initial write must never turn into a successful send and told receipt before a retry lands it.
+func (s *Service) supervisePendingDurably(list []superviseSignal) bool {
+	if s.store() == nil {
+		return true
+	}
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !s.relayLocked(context.Background()) {
+		return false
+	}
+	for _, g := range list {
+		if cur, ok := r.st.SupervisePending[g.id()]; !ok || cur.Key != g.Key {
+			return false
+		}
+	}
+	return true
 }
 
 // ackSupervisePendingLocked removes exactly these stretches while relays.mu is held and the queue is saved atomically.

@@ -617,7 +617,7 @@ func TestWithdrawnRelayReplayRequiresRemovingSameHead(t *testing.T) {
 		t.Fatal("the persisted in-doubt original was not recognized after restart")
 	}
 	r.mu.Lock()
-	replay := s.takeRelayHeadLocked("conv1", msg, true, true)
+	replay := s.takeRelayHeadLocked("conv1", msg, true)
 	queued := len(r.st.Queue["conv1"])
 	restored := r.st.SupervisePending[start.id()]
 	r.mu.Unlock()
@@ -631,11 +631,85 @@ func TestWithdrawnRelayReplayRequiresRemovingSameHead(t *testing.T) {
 		t.Fatal("the changed-head check discarded the durable delivery evidence before removal")
 	}
 	r.mu.Lock()
-	replay = s.takeRelayHeadLocked("conv1", updated, true, false)
+	replay = s.takeRelayHeadLocked("conv1", updated, false)
 	queued = len(r.st.Queue["conv1"])
 	r.mu.Unlock()
 	if len(replay) != 0 || queued != 0 {
 		t.Fatalf("the landed updated head was replayed or retained: replay=%+v queued=%d", replay, queued)
+	}
+}
+
+// A successful send may finish after another writer replaced the queue head. Only the exact sent head may leave;
+// a different head is not delivery evidence and must remain queued (#5732).
+func TestSuccessfulRelayRemovalRequiresSameHead(t *testing.T) {
+	s, _ := newQuietServiceOn(t, &memStore{})
+	if s.queueRelay("conv1", relayMsg{Tool: "conversation_send", Text: "current head", At: time.Now()}) != 1 {
+		t.Fatal("the current head was not queued")
+	}
+	r := &s.relays
+	r.mu.Lock()
+	head := r.st.Queue["conv1"][0]
+	older := head
+	older.Text = "an older send"
+	replay := s.takeRelayHeadLocked("conv1", older, true)
+	queued := len(r.st.Queue["conv1"])
+	r.mu.Unlock()
+	if len(replay) != 0 || queued != 1 {
+		t.Fatalf("a successful older send removed the current head: replay=%+v queued=%d", replay, queued)
+	}
+	r.mu.Lock()
+	replay = s.takeRelayHeadLocked("conv1", head, true)
+	queued = len(r.st.Queue["conv1"])
+	r.mu.Unlock()
+	if len(replay) != 0 || queued != 0 {
+		t.Fatalf("the exact successful head was not removed: replay=%+v queued=%d", replay, queued)
+	}
+}
+
+// The queue's own pre-send write adds attempt metadata to the head. That is still the exact message being sent,
+// not a concurrent replacement; a successful send must remove it (#5732).
+func TestSuccessfulRelayRemovalAllowsOwnAttemptMetadata(t *testing.T) {
+	s, _ := newQuietServiceOn(t, &memStore{})
+	if s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: "current head", At: time.Now()}) != 1 {
+		t.Fatal("the current head was not queued")
+	}
+	r := &s.relays
+	r.mu.Lock()
+	sent := r.st.Queue["conv1"][0]
+	r.st.Queue["conv1"][0].TriedAt = time.Now().UTC()
+	r.st.Queue["conv1"][0].Looks = 2
+	r.st.Queue["conv1"][0].LookAfter = time.Now().Add(time.Second).UTC()
+	r.st.Queue["conv1"][0].DoubtedAt = time.Now().UTC()
+	replay := s.takeRelayHeadLocked("conv1", sent, true)
+	queued := len(r.st.Queue["conv1"])
+	r.mu.Unlock()
+	if len(replay) != 0 || queued != 0 {
+		t.Fatalf("the sender's own attempt metadata blocked exact-head removal: replay=%+v queued=%d", replay, queued)
+	}
+}
+
+// A successful original digest covers only signals it actually carried. A concurrently retained new signal must keep
+// both its queue head and durable outbox entry even when the narrowed head is withdrawn (#5732).
+func TestSuccessfulRelayRemovalRejectsUncoveredSupervisionSignals(t *testing.T) {
+	s, _ := newQuietServiceOn(t, &memStore{})
+	start := superviseSignal{Todo: "todo-a", Kind: sigUnjudged, Key: "start", At: time.Now()}
+	other := superviseSignal{Todo: "todo-b", Kind: sigStalled, Key: "other", At: time.Now()}
+	sent := relayMsg{Tool: superviseTool, Text: "mixed supervision", At: time.Now(), Signals: encodeDigestSignals([]superviseSignal{start, other})}
+	if s.queueRelay("conv1", sent) != 1 {
+		t.Fatal("the mixed digest was not queued")
+	}
+	newSignal := superviseSignal{Todo: "todo-c", Kind: sigReview, Key: "new-after-send", At: time.Now()}
+	r := &s.relays
+	r.mu.Lock()
+	r.st.Queue["conv1"][0].Withdrawn = true
+	r.st.Queue["conv1"][0].Signals = encodeDigestSignals([]superviseSignal{newSignal})
+	r.st.SupervisePending = map[string]superviseSignal{newSignal.id(): newSignal}
+	replay := s.takeRelayHeadLocked("conv1", sent, true)
+	queued := len(r.st.Queue["conv1"])
+	retained := r.st.SupervisePending[newSignal.id()]
+	r.mu.Unlock()
+	if len(replay) != 0 || queued != 1 || retained.Key != newSignal.Key {
+		t.Fatalf("an uncovered new signal was acknowledged: replay=%+v queued=%d retained=%+v", replay, queued, retained)
 	}
 }
 

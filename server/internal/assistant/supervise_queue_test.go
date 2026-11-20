@@ -195,6 +195,11 @@ func TestQueuedDigestPersistsAcrossServiceRestart(t *testing.T) {
 	}
 	s.superviseTodo(ctx, task.ID, "conv1", []string{"Verified"}, 0)
 	signals := []superviseSignal{{Todo: task.ID, Kind: sigInterrupted, Key: "cut-off", Detail: "Capacity unavailable"}, {Todo: task.ID, Kind: sigUnjudged, Key: "review", Detail: "Needs review"}}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range signals {
+			pending[g.id()] = g
+		}
+	})
 	if !s.deliverDigest(ctx, s.settings(ctx), "conv1", signals, "", time.Now(), time.Time{}) {
 		t.Fatal("not queued")
 	}

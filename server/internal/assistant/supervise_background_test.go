@@ -617,6 +617,16 @@ func TestRehomeKeepsLegacyBackgroundCloseout(t *testing.T) {
 	}
 }
 
+func TestLegacyBackgroundGrantReadsFormerNULKey(t *testing.T) {
+	grants := map[string]bool{"bg1\x00todo_legacy": true}
+	if !legacyBackgroundGrant(grants, "bg1", "todo_legacy") {
+		t.Fatal("the former in-memory NUL key no longer authorizes its legacy closeout")
+	}
+	if legacyBackgroundGrant(grants, "bg1", "todo_other") || legacyBackgroundGrant(grants, "other", "todo_legacy") {
+		t.Fatal("legacy key compatibility leaked a grant to another task or conversation")
+	}
+}
+
 func TestLegacyBackgroundNoticeSurvivesRestart(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
 	s, f, todo := newBackgroundServiceOn(t, st)
@@ -627,13 +637,13 @@ func TestLegacyBackgroundNoticeSurvivesRestart(t *testing.T) {
 	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
 	tellLegacyBackground(t, s, f, todo.ID, "bg1")
 	s.relays.mu.Lock()
-	persisted := s.relays.st.LegacyBackground["bg1\x00"+todo.ID]
+	persisted := legacyBackgroundGrant(s.relays.st.LegacyBackground, "bg1", todo.ID)
 	s.relays.mu.Unlock()
 	if !persisted {
 		t.Fatal("the delivered legacy notice was not persisted")
 	}
 	var stored relayState
-	if ok, err := s.store().Setting(context.Background(), relayKey, &stored); err != nil || !ok || !stored.LegacyBackground["bg1\x00"+todo.ID] {
+	if ok, err := s.store().Setting(context.Background(), relayKey, &stored); err != nil || !ok || !legacyBackgroundGrant(stored.LegacyBackground, "bg1", todo.ID) {
 		t.Fatalf("the legacy grant was not stored: ok=%v err=%v grants=%+v", ok, err, stored.LegacyBackground)
 	}
 
@@ -1312,6 +1322,36 @@ func TestBackgroundSupervisorGoneAfterRestartKeepsItsQueuedMessage(t *testing.T)
 	}
 	if got := f.noticesTo("gone1"); len(got) != 0 {
 		t.Fatalf("something was sent to the conversation that is gone: %q", got)
+	}
+}
+
+// With no main destination, retirement cannot move anything. Keep the durable queue untouched so a later main
+// configuration can reconcile it instead of silently deleting every kind of relay (#5732).
+func TestBackgroundSupervisorGoneWithoutMainKeepsQueueUntilDestinationReturns(t *testing.T) {
+	s, f, _ := newBackgroundService(t)
+	ctx := context.Background()
+	old := time.Now().Add(-time.Hour).UTC()
+	setSettings(t, s, func(v *Settings) {
+		v.BackgroundSupervisor, v.BackgroundSupervisorMachineID, v.BackgroundSupervisorAt = "gone1", "server", &old
+		v.Main = ""
+	})
+	if s.queueRelay("gone1", relayMsg{From: "conv2", Tool: "conversation_send", Text: "keep until main returns", At: time.Now().UTC()}) == 0 {
+		t.Fatal("could not queue for the old background supervisor")
+	}
+	s.backgroundStranded(ctx)
+	if got := s.queuedFor("gone1"); got != 1 {
+		t.Fatalf("a missing main destination deleted the durable queue: %d", got)
+	}
+	if got := s.queuedFor("conv1"); got != 0 {
+		t.Fatalf("an empty destination invented a main queue: %d", got)
+	}
+	setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+	s.backgroundStranded(ctx)
+	waitFor(t, "the retained message after main returns", func() bool {
+		return slices.ContainsFunc(f.noticesTo("conv1"), func(n string) bool { return strings.Contains(n, "keep until main returns") })
+	})
+	if s.queuedFor("gone1") != 0 {
+		t.Fatal("the retained queue did not move once main returned")
 	}
 }
 

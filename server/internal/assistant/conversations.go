@@ -290,7 +290,8 @@ type relayState struct {
 	// SupervisePending: gathered supervision signals not yet delivered or admitted to Queue. It closes the restart
 	// window for states (notably needs_user) that the watch cannot reconstruct (#5732).
 	SupervisePending map[string]superviseSignal `json:"supervise_pending,omitempty"`
-	// LegacyBackground: conversation + "\x00" + todo whose pre-#5732 supervision notice really reached that conversation.
+	// LegacyBackground: legacyBackgroundKey(conversation, todo) whose pre-#5732 supervision notice really reached that
+	// conversation. Reads also accept the former NUL-delimited in-memory key; only the Postgres-safe form is written.
 	// It survives a manager restart, so an old background can finish exactly those tasks and no new main-supervised ones.
 	LegacyBackground map[string]bool `json:"legacy_background,omitempty"`
 	// Spawned: the conversations conversation_new opened, by id, until they report back or their parent is told
@@ -376,14 +377,14 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 					// Structured recovery requires explicit per-delivery evidence, not a guess from mutable
 					// task fields or a lineage-shared brief. Ambiguous old queues stay available to main.
 					if s.restoredLegacyBackgroundNotice(here, conversation, g) {
-						rs.LegacyBackground[conversation+"\x00"+g.Todo] = true
+						rs.LegacyBackground[legacyBackgroundKey(conversation, g.Todo)] = true
 					}
 				}
 			} else {
 				// A pre-signals digest names each assignment in its numbered entry header. IDs in evidence or links
 				// are not notices for those tasks and must not become closeout permission after a restart.
 				for _, match := range legacySuperviseEntryIDRe.FindAllStringSubmatch(msg.Text, -1) {
-					rs.LegacyBackground[conversation+"\x00"+match[1]] = true
+					rs.LegacyBackground[legacyBackgroundKey(conversation, match[1])] = true
 				}
 			}
 		}
@@ -906,13 +907,57 @@ func (s *Service) relayDelivered(ctx context.Context, to string, msg relayMsg) {
 	b.mu.Unlock()
 }
 
+// sameRelayHeadContent compares the message generation, ignoring only the attempt progress the draining writer saves
+// before and during its own send. Text, signals, withdrawal and every other content field still have to match exactly.
+func sameRelayHeadContent(a, b relayMsg) bool {
+	a.TriedAt, b.TriedAt = time.Time{}, time.Time{}
+	a.Looks, b.Looks = 0, 0
+	a.LookAfter, b.LookAfter = time.Time{}, time.Time{}
+	a.DoubtedAt, b.DoubtedAt = time.Time{}, time.Time{}
+	return a == b
+}
+
+// relayDeliveryCoversHead reports a narrowly narrowed in-flight supervision head: the original send is still live, the
+// current head was withdrawn by a confirmation, and every remaining signal was already in that original send. A new or
+// changed signal is never covered. The original delivered text proves all of them, so the narrowed head may leave too.
+func relayDeliveryCoversHead(id string, current, sent relayMsg) bool {
+	if sent.Tool != superviseTool || sent.Withdrawn || !current.Withdrawn || relayMsgID(id, current) != relayMsgID(id, sent) {
+		return false
+	}
+	remaining, currentStructured := decodeDigestSignals(current.Signals)
+	delivered, sentStructured := decodeDigestSignals(sent.Signals)
+	if !currentStructured || !sentStructured {
+		return false
+	}
+	for _, g := range remaining {
+		if !slices.ContainsFunc(delivered, func(old superviseSignal) bool { return old.id() == g.id() && old.Key == g.Key }) {
+			return false
+		}
+	}
+	return true
+}
+
 // takeRelayHeadLocked removes msg when it is still the queue head and returns the withdrawn signals to replay.
 // relays.mu is held; the outbox update and queue removal are saved together by the caller.
-func (s *Service) takeRelayHeadLocked(id string, msg relayMsg, stale, replayOK bool) (replay []superviseSignal) {
+func (s *Service) takeRelayHeadLocked(id string, msg relayMsg, replayOK bool) (replay []superviseSignal) {
 	b := &s.relays
 	q := b.st.Queue[id]
-	if len(q) == 0 || stale && q[0] != msg {
+	if len(q) == 0 {
+		return nil
+	}
+	covered := relayDeliveryCoversHead(id, q[0], msg)
+	if !sameRelayHeadContent(q[0], msg) && !covered {
 		return nil // another writer changed the head: this copy neither removed it nor owns its replay
+	}
+	if covered {
+		// A confirmation re-durable-ized the remaining signals in case the in-flight original never landed. It did land,
+		// so its original structured payload acknowledges those retained stretches with the head removal (#5732).
+		if signals, structured := decodeDigestSignals(msg.Signals); structured {
+			ackSupervisePendingLocked(b.st.SupervisePending, signals)
+			if len(b.st.SupervisePending) == 0 {
+				b.st.SupervisePending = nil
+			}
+		}
 	}
 	if replayOK && msg.Withdrawn {
 		if signals, structured := decodeDigestSignals(msg.Signals); structured {
@@ -1052,9 +1097,16 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 			taken := false
 			var replay []superviseSignal
 			if leaves {
-				replay = s.takeRelayHeadLocked(id, msg, stale, !landed && !refused)
-				s.saveRelayLocked()
-				taken = true
+				queuedBefore := len(b.st.Queue[id])
+				replay = s.takeRelayHeadLocked(id, msg, !landed && !refused)
+				taken = len(b.st.Queue[id]) < queuedBefore
+				if taken {
+					s.saveRelayLocked()
+				} else if len(b.st.Queue[id]) > 0 {
+					// Another writer replaced the head while this send was outside the lock. The current head still needs
+					// its own delivery decision; this copy neither acknowledges it nor records a delivered receipt.
+					s.drainAfterLocked(machine, id, 0)
+				}
 			} else {
 				if q := b.st.Queue[id]; len(q) > 0 && q[0] == original && q[0] != msg {
 					q[0] = msg

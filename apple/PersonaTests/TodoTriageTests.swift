@@ -71,6 +71,17 @@ struct TodoTriageTests {
         #expect(t.section == .waiting && t.rule == .agentAsks)
     }
 
+    @Test func interruptedAgentDoesNotHideAnotherAgentsBackgroundWait() throws {
+        var cut = session("cut", state: .idle)
+        cut.turnError = "stopped"
+        var blocked = session("blocked", state: .idle)
+        blocked.work = try JSON.decoder.decode(WorkState.self, from: Data(#"{"phase":"blocked","on":"external"}"#.utf8))
+        let td = todo("t", agents: ["cut", "blocked"])
+        let lookup = TodosLogic.makeSessionLookup([cut, blocked])
+        #expect(TodoTriageLogic.agentsStatus(td, lookup: lookup) == .waiting)
+        #expect(TodoTriageLogic.triage(td, lookup: lookup, now: now).section == .working)
+    }
+
     @Test func ownerDecisionIsWaiting() {
         #expect(at(todo("t", agents: ["idle"]) { $0.supervision = .init(supervisor: "c", state: "needs_user") }).rule == .ownerDecides)
         #expect(at(todo("t") { $0.ask = ask("decide") }).section == .waiting)

@@ -83,6 +83,7 @@ func TestInboxNoOutputEscalationReplayAfterRestartDoesNotNotifyTwice(t *testing.
 		t.Fatalf("first escalation lost its source: %q", got)
 	}
 	ordinary := inboxRetryEvent(todo.ID, "ordinary-message")
+	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[ordinary.id()] = ordinary })
 	if !s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{ordinary}, "", now.Add(-time.Hour), time.Time{}) {
 		t.Fatal("ordinary Inbox delivery was blocked")
 	}
@@ -201,6 +202,7 @@ func TestInboxNoOutputEscalationRechecksSourceInsteadOfQueuingStaleNotice(t *tes
 	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server",
 		Assistant: true, Status: proto.StatusWorking})
 	ordinary := inboxRetryEvent(todo.ID, "ordinary-message")
+	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[ordinary.id()] = ordinary })
 	if !s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{ordinary}, "", time.Now(), time.Time{}) ||
 		s.queuedFor("conv1") != 1 {
 		t.Fatal("ordinary Inbox notice did not queue behind the supervisor's turn")

@@ -70,7 +70,7 @@ fun Todo.triageStatus(lookup: (SessionKey) -> Session?, now: Long = System.curre
         }
     }
     return when {
-        interrupted && !working && supervision?.state != "parked" -> TriageStatus.Interrupted
+        interrupted && !working && !waiting && supervision?.state != "parked" -> TriageStatus.Interrupted
         limit -> TriageStatus.UsageLimit
         unread -> TriageStatus.Unread
         working -> TriageStatus.Working
@@ -193,7 +193,8 @@ fun Todo.triage(
     if (!concern && delivery?.state == "live") return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
     val finished = status == TriageStatus.Unread || review == "pending_review" || (ask != null && ask.outcome.isNullOrEmpty()) || ask?.outcome == "done"
     val acceptanceRequired = !seenCanFile
-    if (finished && (!seen(last) || acceptanceRequired)) return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
+    // Parked open-PR work is not awaiting acceptance; keep it in PR to Merge, matching Apple and the web (#5732).
+    if (finished && (!seen(last) || acceptanceRequired) && supervision?.state != "parked") return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
     if (hasOpenPR(now)) return at(TriageSection.Pr, TriageRule.PrOpen)
     // seen since it last moved, and no PR waits on the owner; an open concern is never Done
     if (finished && !concern) return at(TriageSection.Done, TriageRule.Seen)

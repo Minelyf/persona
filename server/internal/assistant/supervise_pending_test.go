@@ -689,6 +689,46 @@ func (st *relayWriteFailure) PutSetting(ctx context.Context, key string, value a
 	return st.Store.PutSetting(ctx, key, value)
 }
 
+// The initial outbox write is the only durable copy of an unreplayable decision. A direct send must wait for that
+// write; recovery then persists it before a restart and delivery, without asking the watch to reconstruct it (#5732).
+func TestInitialSupervisionOutboxFailureBlocksDeliveryUntilDurable(t *testing.T) {
+	st := &relayWriteFailure{Store: planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	presenceTimes(t, 0, 0)
+	ownerTurnTimes(t, 0, 0)
+	ctx := context.Background()
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewPending; return true }); err != nil {
+		t.Fatal(err)
+	}
+	g := superviseSignal{Todo: todo.ID, Kind: sigReview, Key: "unreplayable-owner-decision", Detail: "only the owner can choose", At: time.Now()}
+	markLeaderTurnSignalled(t, s, g)
+	st.setFail(true)
+	s.signal(g)
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	accepted := s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{g}, testWeb, time.Now(), time.Time{})
+	if accepted {
+		t.Fatal("a signal with no durable outbox entry was accepted for direct delivery")
+	}
+	if got := len(f.noticesTo("conv1")); got != 0 {
+		t.Fatalf("a non-durable decision was sent: %d messages", got)
+	}
+	entry, ok := s.turnOf(ctx, todo.ID)
+	if ok && entry.Signal != nil && entry.Signal.Told != nil {
+		t.Fatalf("the non-durable decision was marked told: %+v", entry.Signal)
+	}
+	st.setFail(false)
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(ctx) // first recovery persists the pending signal without delivering it
+	if got := storedSupervisePending(t, s)[g.id()]; got.Key != g.Key {
+		t.Fatalf("recovery did not durably persist the decision: %+v", got)
+	}
+	simulateSupervisionRestart(t, s)
+	s.sendDigest(ctx)
+	waitFor(t, "the recovered durable decision", func() bool {
+		return strings.Contains(strings.Join(f.noticesTo("conv1"), "\n"), g.Detail)
+	})
+}
+
 // A failed queue/outbox write is not durable admission. In particular, the independent turn-told write must not make
 // restart recovery suppress the only remaining evidence of the notification (#5732).
 func TestFailedSupervisionQueueWriteDoesNotMarkTurnTold(t *testing.T) {

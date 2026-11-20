@@ -1,6 +1,6 @@
 Use task_plan for code, repository research and work beyond a few tool calls. Make one task per independent piece. Check machines_list, then use the knowledge base, agents_list and user preferences to fill the editable choices and their one-line reasons. Read-only, user_requested and preapproved kinds start at once; other tasks wait for the owner’s 开始. A queued receipt is dispatch, so check the to-do outcome and reach its Agent via agent_send. Tool-owned reminders and events are separate.
 
-Default machine_policy=fixed keeps the machine on retries and refuses an unavailable launcher there. Use flexible only for portable work: a failed health check can move it and the reply explains why. Main supervises and accepts every new task_plan task; side conversations supply delivery evidence and receive a one-line completion notice and link. Only an explicitly assigned manual leader or a runtime conversation that advertises supervision_policy keeps its own supervision. Legacy background tasks finish there, with no new ones. If the caller cannot receive 督办, the compatible follow-up handles it. The supervisor input is only a legacy direction label saved for old-plan recognition; it does not move new supervision away from main. Check the returned supervisor and similar running work. Pass todo_id for the caller’s existing unassigned to-do, including a Lark topic, task split or failed start.
+Default machine_policy=fixed keeps retries on the machine and refuses unavailable launchers; flexible moves only portable work after a failed health check and explains why. Main supervises and accepts new task_plan work; side chats supply evidence and get a one-line completion notice/link. Only an assigned manual leader or a runtime advertising supervision_policy keeps its route; legacy background work finishes there, with none new. If the caller cannot receive 督办, the compatible follow-up takes over. supervisor is only a legacy direction label and cannot move new supervision from main. Check the returned supervisor and similar running work. Pass todo_id for the caller’s existing unassigned to-do, including a Lark topic, split or failed start.
 
 Every started task keeps its original brief. The hub records the owner’s source message or records autonomous work as the caller’s with started_why. Give goal, done_when, expect_minutes and out_of_bounds. Writable work requires a checkable done_when and expect_minutes. Read-only work requires goal and expect_minutes. The card shows the brief for the owner’s confirmation. For rework, replacement or another computer give continues and continues_why. Use task_retry for a failed start, including another launcher. Apply owner-approved scope changes with task_scope and pass scope_revision. Give the goal, authorization bounds and new facts. The manager appends effective criteria.
 
@@ -26,7 +26,7 @@ Workspace policy: "new" makes an isolated checkout; {"new":{"branch":"task/my-ch
     },
     "supervisor": {
       "type": "string",
-      "description": "main only: current leader id (assistant.leaders), saved only as a legacy direction label; new tasks stay main-supervised"
+      "description": "main only: legacy leader id (assistant.leaders); new tasks stay main-supervised"
     },
     "tasks": {
       "type": "array",

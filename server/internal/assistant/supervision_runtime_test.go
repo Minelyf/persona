@@ -353,6 +353,69 @@ func capableRuntimeCaps() *proto.SessionCapabilities {
 	return &proto.SessionCapabilities{Read: true, Send: true, Interrupt: true, Approve: true, SupervisionPolicy: true}
 }
 
+func capableRuntimeTestSide() proto.Session {
+	return proto.Session{
+		SessionID: "agy-side", MachineID: "server", Assistant: true, SourceKind: proto.SourceRuntime,
+		Agent: "agy", Launcher: "agy", Status: proto.StatusIdle, Capabilities: capableRuntimeCaps(),
+	}
+}
+
+func TestCapableRuntimeWithoutMainSupervisesOwnTasks(t *testing.T) {
+	ctx := context.Background()
+	s, f := newQuietService(t)
+	side := capableRuntimeTestSide()
+	f.setSessions("server", side)
+	f.mu.Lock()
+	f.known[side.SessionID] = true
+	f.mu.Unlock()
+	setSettings(t, s, func(v *Settings) { v.Main = "" })
+
+	if _, err := s.toolTaskPlan(ctx, side.SessionID, json.RawMessage(runtimePlan)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the worker to link without main", func() bool { return len(onlyTodo(s).Agents) == 1 })
+	task := onlyTodo(s)
+	if task.Origin != side.SessionID || task.Supervision == nil || task.Supervision.Supervisor != side.SessionID {
+		t.Fatalf("capable runtime without main lost its own supervision: %q, %+v", task.Origin, task.Supervision)
+	}
+	if _, err := runJSON(t, s, side.SessionID, "task_review", map[string]any{
+		"todo_id": task.ID, "verdict": "accepted", "note": "verified without main",
+	}); err != nil {
+		t.Fatalf("capable runtime without main could not accept its own task: %v", err)
+	}
+	if todoNow(s, task.ID).DoneAt == nil {
+		t.Fatal("capable runtime without main did not close its accepted task")
+	}
+}
+
+func TestCapableRuntimeSideChatSurvivesRehome(t *testing.T) {
+	ctx := context.Background()
+	s, f := newQuietService(t)
+	persona := proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle}
+	side := capableRuntimeTestSide()
+	f.setSessions("server", persona, side)
+	f.mu.Lock()
+	f.known[side.SessionID] = true
+	f.mu.Unlock()
+	if _, err := s.toolTaskPlan(ctx, side.SessionID, json.RawMessage(runtimePlan)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the worker to link before rehome", func() bool { return len(onlyTodo(s).Agents) == 1 })
+	task := onlyTodo(s)
+	s.rehomeSupervisedTodos(ctx)
+	if got := todoNow(s, task.ID).Supervision; got == nil || got.Supervisor != side.SessionID {
+		t.Fatalf("rehome rewrote the explicit capable-runtime topology: %+v", got)
+	}
+	if _, err := runJSON(t, s, side.SessionID, "task_review", map[string]any{
+		"todo_id": task.ID, "verdict": "accepted", "note": "verified after rehome",
+	}); err != nil {
+		t.Fatalf("capable runtime could not accept after rehome: %v", err)
+	}
+	if todoNow(s, task.ID).DoneAt == nil {
+		t.Fatal("capable runtime acceptance after rehome did not close the task")
+	}
+}
+
 // A runtime session that advertises capabilities.supervision_policy (e.g. Antigravity) supervises its own planned
 // tasks, receives separate supervision_instructions on supervision deliveries, and loses the policy once its last
 // open task closes.

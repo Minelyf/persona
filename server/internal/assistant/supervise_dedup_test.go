@@ -204,8 +204,9 @@ func TestSupervisionPRConflictFailedDispatchReleasesReservation(t *testing.T) {
 	f.mu.Lock()
 	f.failAssistant = nil
 	f.mu.Unlock()
-	if !s.deliverDigest(ctx, s.settings(ctx), "conv1", []superviseSignal{g}, "", time.Now(), time.Time{}) ||
-		len(f.notices()) != 1 {
-		t.Fatalf("failed dispatch permanently swallowed the conflict: %q", f.notices())
-	}
+	// Recovery goes through the real digest path: it must persist the restored outbox entry before direct delivery.
+	// Calling deliverDigest directly here would bypass the durable prerequisite added with #5732.
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(ctx)
+	waitFor(t, "the recovered conflict after its durable outbox write", func() bool { return len(f.notices()) == 1 })
 }

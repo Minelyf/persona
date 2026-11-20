@@ -78,6 +78,14 @@ func (s *Service) backgroundSupervises(ctx context.Context, self string, t Todo)
 	return s.isLeader(ctx, sup) && s.runtimeWithoutSupervisionPolicy(ctx, s.settings(ctx).MachineID, sup)
 }
 
+// legacyBackgroundKey is safe as a Postgres JSON object key: session and todo IDs cannot contain '|'. The former NUL
+// separator made every durable relay write fail with SQLSTATE 22P05; reads still accept that old in-memory encoding.
+func legacyBackgroundKey(conversation, todoID string) string { return conversation + "|" + todoID }
+
+func legacyBackgroundGrant(grants map[string]bool, conversation, todoID string) bool {
+	return grants[legacyBackgroundKey(conversation, todoID)] || grants[conversation+"\x00"+todoID]
+}
+
 // legacyBackgroundNotice reports whether a real old notice reached this background conversation. The in-memory grant
 // covers the current turn; relayState keeps it across restarts and reconstructs it for pre-upgrade queued messages.
 func (s *Service) legacyBackgroundNotice(ctx context.Context, self, todoID string) bool {
@@ -86,9 +94,8 @@ func (s *Service) legacyBackgroundNotice(ctx context.Context, self, todoID strin
 	// Serialize the check with that boundary so an immediate review cannot be rejected while its notice is in flight.
 	b.dedupMu.Lock()
 	defer b.dedupMu.Unlock()
-	key := self + "\x00" + todoID
 	b.mu.Lock()
-	granted := b.legacyBackground[key]
+	granted := legacyBackgroundGrant(b.legacyBackground, self, todoID)
 	b.mu.Unlock()
 	if granted {
 		return true
@@ -96,7 +103,7 @@ func (s *Service) legacyBackgroundNotice(ctx context.Context, self, todoID strin
 	r := &s.relays
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return s.relayLocked(ctx) && r.st.LegacyBackground[key]
+	return s.relayLocked(ctx) && legacyBackgroundGrant(r.st.LegacyBackground, self, todoID)
 }
 
 // noMainOriginFallback identifies only the new delivery fallback that must not become closeout evidence. conversation
@@ -128,7 +135,7 @@ func (s *Service) rememberLegacyBackground(conversation string, list []supervise
 	b.init()
 	for _, g := range list {
 		if g.Todo != "" {
-			key := conversation + "\x00" + g.Todo
+			key := legacyBackgroundKey(conversation, g.Todo)
 			b.legacyBackground[key] = true
 			keys = append(keys, key)
 		}
@@ -194,7 +201,7 @@ func (s *Service) ensureBackground(ctx context.Context) (id, gone string) {
 // queued), the message itself moves to conversation to. A conversation reserved by backgroundOutgrown is released here:
 // no message is dropped and no replacement is started. dedupMu is held.
 func (s *Service) backgroundLost(ctx context.Context, old, to, web string) []superviseSignal {
-	if old == "" || old == to {
+	if old == "" || old == to || to == "" {
 		return nil
 	}
 	b := &s.supervise

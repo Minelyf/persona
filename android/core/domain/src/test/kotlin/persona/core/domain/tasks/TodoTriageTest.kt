@@ -19,6 +19,7 @@ import persona.core.contracts.TodoAsk
 import persona.core.contracts.TodoDelivery
 import persona.core.contracts.TodoPRStatus
 import persona.core.contracts.TodoState
+import persona.core.contracts.WorkState
 
 // The same cases as web/src/lib/todo-triage.test.ts (docs/assistant/todo-status-sop.md, decision table), so the clients
 // cannot drift apart.
@@ -70,6 +71,14 @@ class TodoTriageTest {
     private fun sharedAgent(sid: String, linkedAt: String) = TodoAgent(machineId = "m", sessionId = sid, linkedAt = linkedAt)
 
     private fun atShared(td: Todo, vararg sessions: Session) = td.triage(lookupOf(*sessions), now, zone = zone)
+
+    @Test fun interruptedAgentDoesNotHideAnotherAgentsBackgroundWait() {
+        val cut = session("cut", "idle").copy(turnError = "stopped")
+        val blocked = session("blocked", "idle").copy(work = WorkState(phase = "blocked", on = "external"))
+        val td = todo("t", agents = listOf(agent("cut"), agent("blocked")))
+        assertEquals(TriageStatus.Waiting, atShared(td, cut, blocked).let { td.triageStatus(lookupOf(cut, blocked), now) })
+        assertEquals(TriageSection.Working, atShared(td, cut, blocked).section)
+    }
 
     private fun openPr(url: String) = TodoPRStatus(url = url, state = "open", checkedAt = Instant.ofEpochMilli(now).toString())
 
@@ -837,6 +846,22 @@ class TodoTriageTest {
         // seen, it is no longer open work
         assertEquals(TodoBucket.Closed, todo("t", agents = listOf(agent("unseen"))).copy(seenAt = minutesAgo(30)).bucket(lookup, now))
         assertEquals(TodoBucket.Open, todo("t", agents = listOf(agent("unseen"))).bucket(lookup, now))
+    }
+
+    @Test
+    fun parkedOpenPrIsNotAwaitingAcceptance() {
+        // A parked verdict is the supervisor's reading of the latest turn. An unread session left behind must not hide
+        // its fresh open PR behind the supervised acceptance rule; Apple and the web already exempt parked here.
+        val parked = at(
+            todo(
+                "t",
+                agents = listOf(agent("unseen")),
+                supervision = Supervision(supervisor = "main", state = "parked"),
+                prUrl = "https://example.com/pull/1",
+                prStatus = openPr("https://example.com/pull/1"),
+            ).copy(seenAt = minutesAgo(30)),
+        )
+        assertEquals(TriageSection.Pr to TriageRule.PrOpen, parked.section to parked.rule)
     }
 
     @Test

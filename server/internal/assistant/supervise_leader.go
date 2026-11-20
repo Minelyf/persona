@@ -61,13 +61,13 @@ func (s *Service) planTaskSupervisor(ctx context.Context, conversation string, t
 	}
 	cfg := s.settings(ctx)
 	supervisor, _ := s.defaultPlanSupervisor(ctx, conversation, "")
-	if supervisor == "" {
-		return "", nil
-	}
 	if conversation != cfg.Main {
 		if c, ok := s.session(ctx, cfg.MachineID, conversation); ok && c.Assistant && runtimeSessionSupportsSupervisionPolicy(c) && !s.isBackground(ctx, conversation) {
 			supervisor = conversation
 		}
+	}
+	if supervisor == "" {
+		return "", nil
 	}
 	machine := cfg.MachineID
 	if supervisor == cfg.Main {
@@ -125,7 +125,8 @@ func (s *Service) rehomeSupervisedTodos(ctx context.Context) {
 		sup := t.Supervision.Supervisor
 		_, _, worker := parseLeaderRef(sup)
 		manualLeader := s.isLeader(ctx, sup) && !s.legacyLeaderPlanSupervision(ctx, t)
-		if sup == main || worker || manualLeader || s.isBackground(ctx, sup) {
+		capableRuntime := sup != "" && t.Origin == sup && s.runtimeWithSupervisionPolicy(ctx, s.settings(ctx).MachineID, sup)
+		if sup == main || worker || manualLeader || capableRuntime || s.isBackground(ctx, sup) {
 			continue
 		}
 		if _, _, err := s.updateSupervision(ctx, t.ID, func(v *Supervision) bool {

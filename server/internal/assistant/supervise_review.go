@@ -159,10 +159,11 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 			return "", err
 		}
 	}
-	// A legacy task without a ledger stays unsupervised when main accepts or cancels it; closing it must not invent a
-	// new supervision topology. Rework, needs_user and parked require an existing supervised task.
-	ledger := t.Supervision != nil
-	if !ledger && (verdict == reviewRework || verdict == reviewNeedsUser || verdict == reviewParked) {
+	// An explicit main acceptance records its verdict even for a legacy task without a ledger: accepted prerequisites
+	// use that durable receipt to release their dependents. Dispatch-time topology is decided where the task is created,
+	// and nonterminal reviews still require an existing supervised task. Cancellation needs no such receipt ledger.
+	ledger := t.Supervision != nil || isMain && verdict == reviewAccepted
+	if t.Supervision == nil && (verdict == reviewRework || verdict == reviewNeedsUser || verdict == reviewParked) {
 		return "", fmt.Errorf("task %s is not supervised: send what is missing to its agent with agent_send, or ask the user in your answer", t.ID)
 	}
 	if verdict == reviewParked && s.agentSupervised(t) {

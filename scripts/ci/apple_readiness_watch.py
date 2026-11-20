@@ -68,13 +68,14 @@ def sample_host(udid, destination, label, runner=subprocess.run):
 
 
 def product_evidence(app, test_bundle, destination):
-    """Check only the disposable CI products; do not export source or entitlements."""
-    files = [app, app.parent / "Frameworks/libXCTestBundleInject.dylib", test_bundle]
-    for index, path in enumerate(files):
+    """Check the disposable app bundle and its executable, without entitlements/source."""
+    for index, path in enumerate([app, test_bundle, app.parent / "Frameworks/libXCTestBundleInject.dylib"]):
         bounded_file(["file", str(path)], destination / f"product-{index}-architecture.txt", timeout=5)
-        bounded_file(["codesign", "--verify", "--verbose=2", str(path)],
-                     destination / f"product-{index}-signature.txt", timeout=10)
-    bounded_file(["otool", "-L", str(test_bundle)], destination / "test-bundle-libraries.txt", timeout=10)
+    for index, bundle in enumerate([app.parent, test_bundle.parent]):
+        bounded_file(["codesign", "--verify", "--verbose=2", str(bundle)],
+                     destination / f"product-{index}-bundle-signature.txt", timeout=10)
+    for index, path in enumerate([app, test_bundle, app.parent / "Frameworks/libXCTestBundleInject.dylib"]):
+        bounded_file(["otool", "-L", str(path)], destination / f"product-{index}-libraries.txt", timeout=10)
 
 
 def observe(udid, bundle, app, test_bundle, destination, seconds, runner=subprocess.run,

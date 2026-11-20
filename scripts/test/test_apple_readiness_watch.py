@@ -75,6 +75,24 @@ class ObserverTests(unittest.TestCase):
         sample.assert_called_once_with(UDID, self.destination, "host-final", mock.ANY)
         self.assertIn("xcodebuild-finished", (self.destination / "observer.status.txt").read_text())
 
+    def test_product_evidence_checks_app_bundle_and_executable_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "Persona.app/Persona"
+            tests = root / "Persona.app/PlugIns/PersonaTests.xctest/PersonaTests"
+            calls = []
+            def record(command, path, **kwargs):
+                calls.append(command)
+                return 0
+            with mock.patch.object(watch, "bounded_file", side_effect=record):
+                watch.product_evidence(app, tests, root)
+            self.assertEqual(calls.count(["codesign", "--verify", "--verbose=2", str(app.parent)]), 1)
+            self.assertEqual(calls.count(["codesign", "--verify", "--verbose=2", str(tests.parent)]), 1)
+            for path in (app, tests, app.parent / "Frameworks/libXCTestBundleInject.dylib"):
+                self.assertIn(["file", str(path)], calls)
+                self.assertIn(["otool", "-L", str(path)], calls)
+            self.assertFalse(any(command[0] == "codesign" and command[-1] == str(app) for command in calls))
+
     def test_second_sample_distinguishes_persistent_host_wait(self):
         ticks = iter([0, 1, 2, 3, 34])
         monotonic = lambda: next(ticks, 200)

@@ -198,10 +198,12 @@ func (s *Service) ensureBackground(ctx context.Context) (id, gone string) {
 // backgroundLost takes back what was still queued for legacy background supervisor old, which is gone or cannot start
 // another clean round. Known signals are regathered with any explicit target to old cleared, so they route to main rather
 // than back to the retired conversation. When the signals are not known (the manager restarted since the message was
-// queued), the message itself moves to conversation to. A conversation reserved by backgroundOutgrown is released here:
-// no message is dropped and no replacement is started. dedupMu is held.
+// queued), the message itself moves to conversation to. A hand-over of the owner's words follows its message; with no
+// conversation to move to it is not delivered (relay_handover.go). Ordinary relays with no destination stay queued
+// for a later reconciliation. A conversation reserved by backgroundOutgrown is released here: no replacement starts.
+// dedupMu is held.
 func (s *Service) backgroundLost(ctx context.Context, old, to, web string) []superviseSignal {
-	if old == "" || old == to || to == "" {
+	if old == "" || old == to {
 		return nil
 	}
 	b := &s.supervise
@@ -215,25 +217,56 @@ func (s *Service) backgroundLost(ctx context.Context, old, to, web string) []sup
 		}
 	}
 	moved := 0
+	title := "" // the name of to, for a hand-over of the owner's words that moves there (relay_handover.go)
+	if to != "" && s.queuedHandover(old) {
+		title = short(to)
+		if cfg := s.settings(ctx); cfg.MachineID != "" {
+			if c, ok := s.session(ctx, cfg.MachineID, to); ok {
+				title = conversationName(c, cfg.Main)
+			}
+		}
+	}
+	h := &s.handovers
+	h.mu.Lock() // before the relay lock (handoverBook): the hand-overs change before the queue that moves them is saved
 	r := &s.relays
 	r.mu.Lock()
+	keepOld := to == "" // without a destination, ordinary relays wait for a later reconciliation (#5732)
 	if s.relayLocked(ctx) && len(r.st.Queue[old]) > 0 && !r.draining[old] {
+		var handovers []string
+		var retained []relayMsg
 		for _, msg := range r.st.Queue[old] {
 			if msg.Tool == superviseTool && len(lost) > 0 {
-				continue // told again from its signals
+				if to == "" {
+					retained = append(retained, msg)
+				}
+				continue // told again from its signals when a destination exists
+			}
+			if msg.Handover != "" {
+				handovers = append(handovers, msg.Handover)
 			}
 			if to != "" {
 				msg.OnceID = ""                                                     // another destination is a separate delivery
 				msg.TriedAt, msg.Looks, msg.LookAfter = time.Time{}, 0, time.Time{} // the earlier try was to another conversation
 				r.st.Queue[to] = append(r.st.Queue[to], msg)
 				moved++
+			} else if msg.Handover == "" {
+				retained = append(retained, msg)
 			}
 		}
-		delete(r.st.Queue, old)
+		s.handoversMovedLocked(handovers, to, title) // an owner-word hand-over with nowhere to go ends as not delivered
+		keepOld = len(retained) > 0
+		if keepOld {
+			r.st.Queue[old] = retained
+		} else {
+			delete(r.st.Queue, old)
+		}
 		s.saveRelayLocked()
 	}
-	delete(r.replacing, old)
+	if !keepOld {
+		delete(r.replacing, old)
+	}
 	r.mu.Unlock()
+	h.mu.Unlock()
 	if moved > 0 {
 		s.logf("supervise: %d message(s) queued for the background supervisor %s, which is gone, wait for %s now", moved, short(old), short(to))
 		if cfg := s.settings(ctx); cfg.MachineID != "" {

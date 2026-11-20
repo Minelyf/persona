@@ -59,5 +59,8 @@
   "test_none": "Connected, but there's no allowance to show (the gateway lists {listed} accounts)",
   "test_failed": "Couldn't connect: {reason}",
   "test_note": "A test reads once and saves nothing.",
-  "save": "Save"
+  "save": "Save",
+  "providers_title": "Providers in the usage bars",
+  "providers_footer": "Turn a provider off to leave it out of the sidebar's usage bars. Only the display changes: computers and gateways are still read, and nothing else uses these switches.",
+  "provider_show": "Show {name} in the usage bars"
 }

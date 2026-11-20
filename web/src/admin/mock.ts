@@ -86,6 +86,8 @@ export function installMock(scenario: string) {
     enabled: true,
     poll_minutes: 5,
     limit: 8,
+    hidden_providers: [],
+    providers: ["claude", "codex", "kimi"],
     sources: [
       { id: "src-1a2b3c4d", name: "Relay", type: "relay", url: "https://gateway.example.com", has_key: true, enabled: true, status: { ok_at: iso(2), tried_at: iso(2), seen: { accounts: 12, windows: 31, listed: 14, providers: { codex: 8, claude: 4 } } } },
       { id: "src-5e6f7a8b", name: "Team pool", type: "generic", url: "https://pool.example.com/persona/usage", has_key: true, enabled: true, status: { ok_at: iso(95), tried_at: iso(1), error: "unreachable", seen: { accounts: 3, windows: 5, listed: 3, providers: { kimi: 3 } } } },
@@ -448,6 +450,7 @@ export function installMock(scenario: string) {
       case "PUT /usage-sources":
         if (typeof body.enabled === "boolean") usage.enabled = body.enabled;
         if (typeof body.poll_minutes === "number") usage.poll_minutes = body.poll_minutes;
+        if (Array.isArray(body.hidden_providers)) usage.hidden_providers = body.hidden_providers as string[];
         return json(usage);
       case "POST /usage-sources": {
         if (usage.sources.length >= usage.limit) return fail(409, "too_many", "最多 8 个来源");

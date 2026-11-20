@@ -163,6 +163,38 @@ class BackgroundTasksPanelTest {
         assertEquals("", state.value.text)
     }
 
+    @Test fun workflowsSuggestionIsAvailableOnlyForAStandaloneDraft() {
+        val state = ChatComposerState()
+        val quoted = mutableStateOf(false)
+        val attachment = ComposerAttachment("attached", "review.txt", "content://example/review.txt", image = false, path = "/project/review.txt")
+        var opened = 0
+        rule.setContent {
+            PersonaTheme(reduceMotion = true, style = AppStyle.Brief) {
+                ChatComposer(owner.key, state, working = false, sending = false, canClear = false, service = null,
+                    onSend = {}, onCommand = {}, onNotice = {}, extraContent = quoted.value, onWorkflows = { opened++ })
+            }
+        }
+        val field = rule.onNode(hasSetTextAction(), useUnmergedTree = true)
+        field.performTextReplacement("/workf")
+        val suggestion = rule.onNode(hasText("/workflows") and hasClickAction())
+        suggestion.assertExists()
+
+        rule.runOnIdle { state.attachments = listOf(attachment) }
+        suggestion.assertDoesNotExist()
+        assertEquals("/workf", state.value.text)
+        assertEquals(listOf(attachment), state.attachments)
+
+        rule.runOnIdle { state.attachments = emptyList(); quoted.value = true }
+        suggestion.assertDoesNotExist()
+        assertEquals("/workf", state.value.text)
+        assertEquals(0, opened)
+
+        rule.runOnIdle { quoted.value = false }
+        suggestion.performClick()
+        assertEquals(1, opened)
+        assertEquals("", state.value.text)
+    }
+
     @Test fun commandDispatchPreservesAdditionalContentAndSavedPromptText() {
         val state = ChatComposerState()
         var panel = 0

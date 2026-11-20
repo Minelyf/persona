@@ -424,7 +424,7 @@ internal class ChatPageRecap(
 @Composable
 internal fun rememberChatPageSubagents(
     key: SessionKey, chrome: ChatChromeBindings, readOnly: Boolean, session: Session?,
-    openBackground: (BackgroundDestination) -> Unit,
+    openBackground: ((BackgroundDestination) -> Unit)?,
 ): ChatPageSubagents {
     val subagentLinks = remember(session?.subagents, chrome.onOpenSession, readOnly, key.machineId) {
         val listed = session?.subagents.orEmpty()
@@ -438,13 +438,14 @@ internal fun rememberChatPageSubagents(
     // opening as "View sub-agent" does. What the reader opens or folds in them lasts while this chat is open.
     val workflowFolds = remember(key) { persona.core.designsystem.WorkflowFolds() }
     val background = rememberUpdatedState(openBackground)
-    val workflowCards = remember(session?.workflows, session?.assistant, chrome.onOpenSession, readOnly, key.machineId, workflowFolds) {
+    val hasBackgroundAction = openBackground != null
+    val workflowCards = remember(session?.workflows, chrome.onOpenSession, readOnly, key.machineId, workflowFolds, hasBackgroundAction) {
         val open = chrome.onOpenSession?.takeIf { !readOnly }
         session?.workflows.orEmpty().filter { !it.toolUseId.isNullOrBlank() }.associateBy { it.toolUseId!! }
             .takeIf { it.isNotEmpty() }
             ?.let { runs -> ChatWorkflows(runs, workflowFolds,
                 open?.let { o -> { agent -> o(SessionKey(key.machineId, agent.sessionId)) } },
-                if (session?.assistant == false && !readOnly) ({ run -> background.value(BackgroundDestination.Run(run.backgroundId())) }) else null) }
+                if (hasBackgroundAction) ({ run -> background.value?.invoke(BackgroundDestination.Run(run.backgroundId())) }) else null) }
     }
     return ChatPageSubagents(subagentLinks, subagentFolds, workflowCards)
 }

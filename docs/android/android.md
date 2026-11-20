@@ -641,8 +641,9 @@ Ported 2026-11-02 from the old App on the main line (inventory items C5–C7, C9
 
 **Background tasks** in the Agent chat menu opens the native panel. Glass also has the activity pill when the
 Agent is running background work or has a loop. Picking or sending the bare `/workflows` command opens the
-latest workflow locally. A workflow card opens its own run. A command in a saved prompt or accompanied by
-attached context stays an ordinary draft.
+latest workflow locally. A workflow card opens its own run, including in read-only Agent chats. Subagent and
+workflow-agent chats do not offer that action. When the draft includes an attachment, quoted context, or a
+selected saved prompt, the local command suggestion stays hidden and the draft can be sent as a message.
 
 The panel groups work into **Running** and **Completed**. A loop keeps its confirmed **Stop Loop** action.
 Workflow details show phases and their Agents. Shell commands and Monitors have details even when the output

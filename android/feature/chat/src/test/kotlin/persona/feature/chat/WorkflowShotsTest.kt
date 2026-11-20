@@ -271,14 +271,18 @@ class WorkflowShotsTest {
         val launch = call("toolu_wf_run", "Workflow", buildJsonObject { put("name", "widget-review") })
         val reply = Item("r#0", kind = "text", role = "assistant", text = "widget-review is running in the background; I will go on when it reports back.")
         var dark by mutableStateOf(false)
+        var readOnly by mutableStateOf(false)
+        var canOpenBackground by mutableStateOf(true)
+        val session = lead.copy(workflows = listOf(running))
         rule.setContent {
             PersonaTheme(darkTheme = dark, reduceMotion = true) {
                 val context = LocalContext.current
                 val loader = remember { ImageLoader.Builder(context).build() }
-                val folds = remember { WorkflowFolds() }
-                CompositionLocalProvider(LocalChatWorkflows provides ChatWorkflows(
-                    mapOf("toolu_wf_run" to running), folds, open = {}, openBackground = { openedRun = it },
-                )) {
+                val open: ((BackgroundDestination) -> Unit)? = if (canOpenBackground) ({ destination ->
+                    openedRun = session.workflows.orEmpty().firstOrNull { it.backgroundId() == (destination as? BackgroundDestination.Run)?.id }
+                }) else null
+                val subagents = rememberChatPageSubagents(session.key, ChatChromeBindings(), readOnly, session, open)
+                CompositionLocalProvider(LocalChatWorkflows provides subagents.workflowCards) {
                     Column(Modifier.testTag("shot").width(400.dp).background(PersonaTheme.palette.background).padding(Tokens.Space.l)) {
                         ChatLineContent(ChatLine.Work("w-1", listOf(read, launch), live = false, start = null, end = null, open = true),
                             SessionKey("mac", "lead"), loader, recordedDuration = 75, onToggle = {}, onFold = {}, folding = emptySet(),
@@ -297,8 +301,20 @@ class WorkflowShotsTest {
             rule.onNodeWithText("当前 Verify：verify:a11y").assertIsDisplayed()
             shot("workflow-chat-glass-${if (nextDark) "dark" else "light"}$scale")
         }
-        rule.onNodeWithText("在后台任务中打开").performClick()
+        val open = rule.onNodeWithText("在后台任务中打开")
+        open.performClick()
         assertEquals(running.runId, openedRun?.runId)
+        rule.runOnIdle { readOnly = true; openedRun = null }
+        for (nextDark in listOf(false, true)) {
+            rule.runOnIdle { dark = nextDark }
+            open.assertIsDisplayed()
+            shot("workflow-chat-read-only-glass-${if (nextDark) "dark" else "light"}$scale")
+        }
+        open.performClick()
+        assertEquals(running.runId, openedRun?.runId)
+        rule.runOnIdle { canOpenBackground = false }
+        open.assertDoesNotExist()
+        rule.onNodeWithTag("workflow-call").assertIsDisplayed()
     }
 
     @Test

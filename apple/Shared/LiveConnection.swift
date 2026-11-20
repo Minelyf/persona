@@ -677,6 +677,7 @@ final class LiveConnection {
         stalled = false
         nextTry = nil
         routeTask = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
             let picked = await route()
             guard let self, gen == self.generation, !self.suspended, !Task.isCancelled else { return }
             if let picked, picked != self.config {

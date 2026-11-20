@@ -175,6 +175,7 @@ extension AppModel {
     /// first. Restoring the last SSH session races the direct addresses, so an unreachable address cannot delay an
     /// already-restored tunnel. Nothing answering at all: the first address, for the socket's own retries.
     func tunnelRoute(_ group: String) async -> ServerConfig? {
+        guard !Task.isCancelled else { return nil }
         tunnelRecoveries.removeValue(forKey: group)?.cancel()
         let candidates = HubRoute.candidates(registry, group: group)
         let tunnels = hubTunnels(group)
@@ -227,7 +228,14 @@ extension AppModel {
                 direct = await HubRoute.answering(candidates)
                 guard !Task.isCancelled else { return nil }
                 seen.direct = direct != nil
-                if let tried = await warming?.value { seen.opened.merge(tried) { $1 } }
+                if let warming {
+                    let tried = await withTaskCancellationHandler {
+                        await warming.value
+                    } onCancel: {
+                        warming.cancel()
+                    }
+                    seen.opened.merge(tried) { $1 }
+                }
             case .direct:
                 for t in tunnels { t.close() }
                 return direct?.config
@@ -294,8 +302,20 @@ extension AppModel {
         let once = Once()
         let config: ServerConfig? = try await withCheckedThrowingContinuation { c in
             Task { @MainActor in
-                let config = await self.tunnelRoute(group)
-                if !once.done { once.done = true; c.resume(returning: config) }
+                do {
+                    // A notification action can arrive while foreground recovery already owns the group's route.
+                    // Join it; a second route pick would cancel that recovery and release its reads too early.
+                    let config: ServerConfig?
+                    if let live = self.link(group)?.live, live.state == .connecting || live.state == .connected {
+                        config = try await live.waitForRoute()
+                    } else {
+                        config = await self.tunnelRoute(group)
+                    }
+                    guard let config else { throw CancellationError() }
+                    if !once.done { once.done = true; c.resume(returning: config) }
+                } catch {
+                    if !once.done { once.done = true; c.resume(throwing: error) }
+                }
             }
             Task { @MainActor in
                 try? await Task.sleep(for: AppModel.outsideWayLimit)

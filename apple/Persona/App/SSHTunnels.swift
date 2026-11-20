@@ -223,7 +223,13 @@ final class SSHTunnels {
 
     /// A route race may retire only the attempt it started. A late loser cannot close a newer route's tunnel.
     func close(_ id: String, openedBy owner: UUID) {
-        guard starting[id]?.owner == owner || tunnels[id]?.owner == owner else { return }
+        // The native listener can be ready before its start task resumes on the main actor. If another route has
+        // already adopted that tunnel, its owner wins over the start task's older owner until that task finishes.
+        if let tunnel = tunnels[id] {
+            guard tunnel.owner == owner else { return }
+        } else {
+            guard starting[id]?.owner == owner else { return }
+        }
         close(id, forget: false)
     }
 

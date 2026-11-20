@@ -139,6 +139,26 @@ struct ForegroundRouteTests {
         #expect(!gate.returned)
     }
 
+    @Test func anOutsideActionJoinsTheForegroundRouteInsteadOfReplacingIt() async throws {
+        let model = AppModel(stateFolder: FileManager.default.temporaryDirectory.appending(path: "foreground-route-" + UUID().uuidString))
+        var hub = PairedHub(id: UUID().uuidString, config: first)
+        hub.addresses = [HubAddress(url: next.url)] // Makes outside use the group's route even without an SSH fixture.
+        model.registry = HubRegistry(hubs: [hub])
+        model.buildLinks()
+        let live = try #require(model.link(hub.group)).live, gate = HeldRoute()
+        live.route = { await gate.pick() }
+        live.connect(first)
+        defer { gate.finish(nil); live.disconnect() }
+        try await waitUntil { gate.continuation != nil }
+        let action = Task {
+            try await model.outside(APIClient(config: first, group: hub.group)) { $0.config }
+        }
+        try await waitUntil { live.waitingForRouteForTests == 1 }
+        #expect(!gate.returned)
+        gate.finish(next)
+        #expect(try await action.value == next)
+    }
+
     @Test func aCapturedClientUsesTheCurrentAddressAndCredentialOnEveryRequest() async throws {
         let link = link(FakeHub())
         link.live.suspended = true // Keep this URL-construction test independent of a real WebSocket.

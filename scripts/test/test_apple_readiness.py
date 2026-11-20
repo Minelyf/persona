@@ -19,6 +19,8 @@ FAKE_XCODE = textwrap.dedent('''\
     root = Path(os.environ["FAKE"])
     with (root / "xcode-calls.jsonl").open("a") as log:
         log.write(json.dumps(args) + "\\n")
+    with (root / "xcode-env.jsonl").open("a") as log:
+        log.write(json.dumps({key: os.environ[key] for key in ("TEST_RUNNER_PERSONA_SHOTS",) if key in os.environ}) + "\\n")
     if args[-1] == "build-for-testing":
         assert args[args.index("-destination") + 1] == "generic/platform=iOS Simulator"
         status = int(os.environ.get("BUILD_STATUS", "0"))
@@ -133,7 +135,7 @@ class AppleReadinessTests(unittest.TestCase):
     def run_preparation(self, **options):
         source = SCRIPT.read_text()
         start = source.index('  IOS_COMMON=(')
-        block = source[start:source.index('  result ios-unit', start)]
+        block = source[start:source.index('  result ios-unit TypeScaleTests', start)]
         shell = '''set -euo pipefail
 ci_run() {
   local label="$1" budget="$2"; shift 2
@@ -190,6 +192,23 @@ TEST_SIGNING=(CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manu
             "Verify hosted iOS test readiness|900", "Grant Reminders access to the owned test app|300",
             "iOS offline unit and design/token tests|1800",
         ])
+        self.assertIn("TEST_RUNNER_PERSONA_SHOTS",
+                      (self.root / "xcode-env.jsonl").read_text())
+
+    def test_compact_visual_output_directory_is_run_specific_and_not_a_skip(self):
+        result, calls = self.run_preparation()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        expected = str(self.output / "shots")
+        environments = [json.loads(line) for line in (self.root / "xcode-env.jsonl").read_text().splitlines()]
+        self.assertEqual(environments[:2], [{}, {}])
+        self.assertEqual(environments[2:], [{"TEST_RUNNER_PERSONA_SHOTS": expected}])
+        for call in calls:
+            self.assertFalse(any(argument.startswith("PERSONA_SHOTS=") for argument in call))
+        support = (ROOT / "apple/PersonaTests/AboutVersionRefractTests.swift").read_text()
+        self.assertIn('try #require(ProcessInfo.processInfo.environment["PERSONA_SHOTS"])', support)
+        self.assertIn("native.pixels == shared.pixels", support)
+        self.assertIn("try FileManager.default.createDirectory(at: root", support)
+        self.assertNotIn("skip-testing:PersonaTests/AboutVersionCompactVisualTests", SCRIPT.read_text())
 
     def test_callkit_in_the_built_app_stops_before_creating_any_device(self):
         result, calls = self.run_preparation(OTOOL_CALLKIT="1")

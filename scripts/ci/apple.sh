@@ -241,6 +241,10 @@ PY
     xcrun simctl privacy "$2" grant reminders "$3"
   ' -- "$SOURCE/scripts/app/sim-boot.sh" "$SIM" "$CI_BUNDLE_ID"
   export TEST_RUNNER_PERSONA_EVENTKIT_ROUNDTRIP=1
+  # The ordinary Persona scheme also runs the compact visual comparisons. Unlike
+  # the dedicated AboutVersionVisualTests scheme, supply their required evidence
+  # directory here, using only this disposable run's output, never a shared one.
+  export TEST_RUNNER_PERSONA_SHOTS="$OUTPUT/shots"
 
   ci_run 'iOS offline unit and design/token tests' 1800 "${IOS_TESTS[@]}" "${IOS_UNIT_SELECTION[@]}" \
     -resultBundlePath "$OUTPUT/ios-unit.xcresult" test-without-building

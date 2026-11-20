@@ -277,9 +277,15 @@ func (s *Service) rehomeQueuedSupervision(ctx context.Context, old string, ids m
 // keep their special target; a manually started Agent the owner explicitly put under a leader keeps that leader. Task
 // leaders' Agent-supervised workers are handled by leaderRoute before this function.
 func (s *Service) digestTo(ctx context.Context, cfg Settings, g superviseSignal) string {
+	own := s.ownSupervisor(cfg)
 	if g.To != "" {
-		if g.To == cfg.BackgroundSupervisor && g.To != cfg.Main &&
-			(cfg.MainSupervisesOwnTasks != nil && *cfg.MainSupervisesOwnTasks || cfg.BackgroundSupervisorMachineID != cfg.MachineID) {
+		switch {
+		case (g.Kind == sigDecide || g.Kind == sigCheck) && g.To == cfg.Main:
+			// A task leader's decision, or the owner's answer to a check's decision on its worker, goes to the conversation
+			// above it. ownSupervisor is main for new work (#5732); only legacy queued work keeps a background route.
+			return own
+		case g.To == cfg.BackgroundSupervisor && g.To != own &&
+			(cfg.MainSupervisesOwnTasks != nil && *cfg.MainSupervisesOwnTasks || cfg.BackgroundSupervisorMachineID != cfg.MachineID):
 			return cfg.Main // a legacy card named a background supervisor that was switched off or moved
 		}
 		return g.To

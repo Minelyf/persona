@@ -591,6 +591,9 @@ func topPriorityGroup(usable []PresetChoice) []PresetChoice {
 // are equal, else a roll over the weights (roll is injected so tests are deterministic; presetIntN in production).
 func weightedPreset(roll func(int) int, usable []PresetChoice) PresetChoice {
 	group := topPriorityGroup(usable)
+	if len(group) == 0 {
+		return PresetChoice{} // nothing usable: the callers report no preset rather than picking one
+	}
 	pick := group[0]
 	if len(group) > 1 && slices.ContainsFunc(group, func(c PresetChoice) bool { return c.Weight != group[0].Weight }) {
 		total := 0

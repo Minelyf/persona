@@ -369,9 +369,8 @@ export function isReviewDone(todo: Todo): boolean {
   return Boolean(todo.done_at) && todo.done_by === "review";
 }
 
-/** A cancelled task: its supervisor ended it without the work being accepted (the row's status line says Cancelled).
- *  Only this outcome is struck through, so an accepted or deployed one does not read as thrown away (#11677). */
-export function isCancelled(todo: Todo): boolean {
+/** A supervisor cancelled a reviewed task without accepting it; only this outcome is struck through (#11677). */
+function isReviewCancelled(todo: Todo): boolean {
   return isReviewDone(todo) && todo.supervision?.state === "cancelled";
 }
 
@@ -379,7 +378,7 @@ export function isCancelled(todo: Todo): boolean {
  *  deployed, ticked by the owner or auto-completed — keeps a plain muted title; the filled check and the muted tone
  *  already say it is closed. A row still open (a failed start waiting on the owner) is never struck (#3713). */
 export function strikesThrough(todo: Todo, open: boolean): boolean {
-  return !open && isCancelled(todo);
+  return !open && isReviewCancelled(todo);
 }
 
 /** An open task its supervisor accepted, reopened by the hub when its agent got more work, with nothing of it running

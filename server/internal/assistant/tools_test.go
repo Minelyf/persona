@@ -684,7 +684,11 @@ func TestAgentStartUnknownReportsStartedWhenTaskClosesDuringLaunch(t *testing.T)
 					todo.DoneAt = &now
 				}
 				s.todos.mu.Unlock()
+				// fakeHub invokes onStart with its mutex held. The production batch scheduler reads settings through Hello,
+				// so let that nested hub call take the mutex while the signal is still raised synchronously during this start.
+				f.mu.Unlock()
 				s.signal(superviseSignal{Todo: id, Kind: sigUnjudged, Key: "start-unknown@" + id, Detail: "earlier unknown start"})
+				f.mu.Lock()
 				sess := proto.Session{SessionID: "s-late", MachineID: "box", Cwd: "/code/app", Agent: "claude",
 					Launcher: a["launcher"].(string), StartedByPersona: true, Status: proto.StatusWorking,
 					State: proto.StateWorking, UpdatedAt: now}

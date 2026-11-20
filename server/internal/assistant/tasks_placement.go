@@ -214,7 +214,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if withDefaults {
 		presetNote = s.applyStartPreset(ctx, t, caller, defaults, params)
 	}
-	own, err := s.resolveStart(ctx, params)
+	own, err := s.resolveStart(ctx, params, t.launcherDefaultModel)
 	if err != nil {
 		return "", "", err
 	}
@@ -358,7 +358,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	// The project background, and the decisions of the todo and its continuation ancestors (a task started again may
 	// have some), follow the assignment; they remain user context, never framework policy. Direction notes are prompt
 	// context, separate from the main supervision ledger (#10623, #5732).
-	background := s.projectHandoffContext(ctx, m.ID, t.Cwd, s.taskDirectionOf(ctx, t))
+	background := s.projectHandoffContextForTodo(ctx, m.ID, t.Cwd, s.taskSupervisorOf(t), s.todoForPlanContext(t))
 	if decisions := s.todoHandoffDecisionsContext(ctx, t.TodoID); decisions != "" {
 		background = strings.TrimSpace(background + "\n\n" + decisions)
 	}

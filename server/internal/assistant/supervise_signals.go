@@ -99,6 +99,10 @@ type superviseSignal struct {
 	Decision *prompts.SuperviseDecision
 	// Inbox: the Inbox item an inbox signal names, and how many new messages it tells (supervise_inbox.go).
 	Inbox *prompts.SuperviseInbox
+	// Optional routine batching keeps these in memory only, after routing and before delivery. They are never part of
+	// a persisted relay payload: once admitted, the existing queue owns delivery.
+	batchTo    string
+	batchUntil time.Time
 }
 
 const (
@@ -171,6 +175,7 @@ type superviseBook struct {
 	asks          map[string]string            // todo → what its agent last asked (InteractionRaised)
 	last          time.Time                    // when the last supervision message went out
 	queued        map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
+	batch         map[string]time.Time         // conversation → its routine batch's first-signal deadline
 	// legacyBackground: legacyBackgroundKey(conversation, todo) → an old notice reached this background conversation,
 	// so it may finish that task. relayState persists the same grant across manager restarts.
 	legacyBackground map[string]bool
@@ -199,6 +204,9 @@ func (b *superviseBook) init() {
 	}
 	if b.failSeen == nil {
 		b.failSeen = map[string]failSeen{}
+	}
+	if b.batch == nil {
+		b.batch = map[string]time.Time{}
 	}
 }
 
@@ -840,6 +848,7 @@ func (s *Service) queueSignalReplacing(old *superviseSignal, g superviseSignal) 
 				g.Inbox = cur.Inbox // the same message again: counted once
 			}
 		}
+		g.batchTo, g.batchUntil = cur.batchTo, cur.batchUntil
 	}
 	s.updateSupervisePending(func(pending map[string]superviseSignal) {
 		// sendDigest may already have taken the older stretch out of b.pending. Its durable outbox entry remains until
@@ -872,7 +881,7 @@ func (s *Service) scheduleDigestLocked(now time.Time) {
 	for _, g := range b.pending {
 		list = append(list, g)
 	}
-	wait, ok := digestWait(now, b.last, list, s.superviseTimings())
+	wait, ok := digestWaitWithBatch(now, b.last, list, s.superviseTimings(), s.supervisionBatchInterval(context.Background()))
 	if !ok {
 		return
 	}

@@ -303,12 +303,12 @@ func (s *Service) prepareAgentTask(ctx context.Context, conversation string, m D
 	return todo, told, true
 }
 
-// linkPreparedAgentTask attaches the node's answered session to the task made before its start.
-func (s *Service) linkPreparedAgentTask(ctx context.Context, todo Todo, m Device, cwd, sid string) error {
+// linkPreparedAgentTask attaches the node's answered session and its actual agent kind to the task made before its start.
+func (s *Service) linkPreparedAgentTask(ctx context.Context, todo Todo, m Device, cwd, sid, agent string) error {
 	if sid == "" {
 		return fmt.Errorf("empty session id")
 	}
-	if err := s.linkTodoAgent(ctx, todo.ID, m.ID, sid, todo.Title, cwd, ""); err != nil {
+	if err := s.linkTodoAgent(ctx, todo.ID, m.ID, sid, todo.Title, cwd, agent); err != nil {
 		s.logf("agent_start %s: link %s: %v", short(sid), todo.ID, err)
 		return err
 	}

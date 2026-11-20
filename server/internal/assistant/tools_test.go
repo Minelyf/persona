@@ -782,7 +782,7 @@ func TestAgentStartUnknownKeepsPendingTaskAndLinksByCreationID(t *testing.T) {
 	requireStartUnknownState(t, s, todo.ID, false)
 	// A later, genuinely unjudged stop has another key and is not part of this retraction.
 	s.signal(superviseSignal{Todo: todo.ID, Kind: sigUnjudged, Key: "later-real-stop", Detail: "a later judge failure"})
-	if _, err := s.linkStartedAgentTask(context.Background(), got, Device{ID: "box"}, "/code/app", "s-other"); err != nil {
+	if _, err := s.linkStartedAgentTask(context.Background(), got, Device{ID: "box"}, "/code/app", "s-other", ""); err != nil {
 		t.Fatal(err)
 	}
 	requireStartUnknownState(t, s, todo.ID, false)
@@ -899,7 +899,7 @@ func TestAgentStartConfirmationRetractsQueuedStartUnknown(t *testing.T) {
 	if !s.queueDigest("conv1", relayMsg{Tool: superviseTool, Text: "stale unknown start", At: time.Now()}, signals, time.Now(), time.Time{}) {
 		t.Fatal("the unknown start was not admitted to the durable relay queue")
 	}
-	if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed"); err != nil {
+	if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
 	s.supervise.mu.Lock()
@@ -939,7 +939,7 @@ func TestAgentStartConfirmationWithdrawsLegacyTextStartUnknown(t *testing.T) {
 	const diagnostic = "启动结果还没确认；待办会按 creation_id 补联，不要重复开 Agent" // i18n-ignore: legacy fixture
 	s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: diagnostic + " " + todo.ID, At: time.Now()})
 	s.queueRelay("conv1", relayMsg{Tool: superviseTool, Text: diagnostic + " " + other.ID, At: time.Now()})
-	if _, err := s.linkStartedAgentTask(ctx, todoNow(s, todo.ID), Device{ID: "box"}, "/code/app", "s-confirmed"); err != nil {
+	if _, err := s.linkStartedAgentTask(ctx, todoNow(s, todo.ID), Device{ID: "box"}, "/code/app", "s-confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := queuedRelays(s, "conv1"); len(got) != 1 || !strings.Contains(got[0].Text, other.ID) {
@@ -992,7 +992,7 @@ func TestAgentStartConfirmationWithdrawsDrainingStartUnknown(t *testing.T) {
 	if text := <-hub.attempts; !strings.Contains(text, "stale unknown start") {
 		t.Fatalf("the first send fixture = %q", text)
 	}
-	if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed"); err != nil {
+	if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -1053,7 +1053,7 @@ func TestAgentStartConfirmationAcknowledgesOtherSignalsAfterSuccessfulHead(t *te
 				t.Fatal("the mixed queue head did not enter its send")
 			}
 			confirm := func() {
-				if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed"); err != nil {
+				if _, err := s.linkStartedAgentTask(context.Background(), todo, Device{ID: "box"}, "/code/app", "s-confirmed", ""); err != nil {
 					t.Fatal(err)
 				}
 			}

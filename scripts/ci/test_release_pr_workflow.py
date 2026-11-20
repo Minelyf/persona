@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -26,7 +27,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", text)
         self.assertIn("github.event.pull_request.user.login == 'chyroc'", text)
         self.assertIn("github.event.pull_request.merge_commit_sha", text)
-        self.assertEqual(self.pr["permissions"], {"contents": "read"})
+        self.assertEqual(self.pr["permissions"], {"contents": "read", "checks": "write"})
 
     def test_all_platforms_feed_the_one_verified_plan(self):
         jobs = self.pr["jobs"]
@@ -40,6 +41,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn("release-pr-" + name + "-", str(jobs[name]))
         self.assertNotIn("cli-web", jobs["cli-web"].get("environment", ""))
         self.assertNotIn("secrets.", str(jobs["cli-web"]))
+        upload = next(step for step in jobs["cli-web"]["steps"] if step.get("uses") == "actions/upload-artifact@v4")
+        self.assertEqual(upload["if"], "always()")
+        self.assertIn("unverified artifacts are diagnostic only", str(jobs["cli-web"]))
         self.assertEqual(jobs["android"]["steps"][2]["with"]["packages"], "platform-tools")
         self.assertEqual(jobs["cli-web"]["steps"][5]["env"]["NODE_OPTIONS"], "--max-old-space-size=4096")
         self.assertIn('--receipt "$RUNNER_TEMP/android-receipt.json"', str(jobs["android"]))
@@ -50,6 +54,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('release-pr-plan-${{ steps.source.outputs.number }}', str(jobs["plan"]))
         self.assertNotIn('release-pr-plan-${{ steps.plan.outputs.pr }}-${{ steps.plan.outputs.commit }}', str(jobs["plan"]))
         self.assertNotIn('release-pr-plan-${{ needs.plan.outputs.pr }}-${{ needs.plan.outputs.commit }}', str(jobs))
+
+    def test_exact_merge_result_check_and_failure_propagation(self):
+        jobs = self.pr["jobs"]
+        self.assertEqual(jobs["plan"]["outputs"]["check_run_id"], "${{ steps.merge-check.outputs.id }}")
+        plan_script = str(jobs["plan"]["steps"])
+        self.assertIn("release_merge_check.py", plan_script)
+        self.assertIn('test "$COMMIT" = "${{ github.event.pull_request.merge_commit_sha || github.sha }}"', plan_script)
+        verify_script = str(jobs["verify"]["steps"])
+        self.assertEqual(jobs["verify"]["steps"][0]["env"], {
+            "CLI_WEB": "${{ needs.cli-web.result }}",
+            "ANDROID": "${{ needs.android.result }}",
+            "APPLE": "${{ needs.apple.result }}",
+            "WINDOWS": "${{ needs.windows.result }}",
+        })
+        self.assertIn('test "$result" = success', verify_script)
+        self.assertIn("--conclusion success", verify_script)
+        self.assertTrue(any(step.get("if") == "failure()" and "--conclusion failure" in step["run"]
+                            for step in jobs["verify"]["steps"]))
+        verified_upload = next(step for step in jobs["verify"]["steps"]
+                               if step.get("uses") == "actions/upload-artifact@v4")
+        self.assertEqual(verified_upload["if"], "success()")
 
     def test_windows_requires_native_execution_and_authenticode(self):
         text = PR.read_text()
@@ -133,13 +158,61 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("refs/heads/$branch", text)
         self.assertIn("preserve its failed source", text)
         self.assertIn("release-reserved.txt", text)
-        self.assertIn("--reserved $(tr '\\n' ' ' < release-reserved.txt)", text)
+        self.assertIn("--reserved", text)
         self.assertLess(text.index('refs/heads/release/*'), text.index('schedule-version'))
         self.assertIn('releases/latest', text)
-        self.assertIn('pulls?state=open&head=$branch&base=main', text)
+        self.assertIn(r'select(.head.ref == \$branch)', text)
         self.assertNotIn("--force", text)
         self.assertNotIn('refs/tags/$TAG', text)
         self.assertNotIn("gh release create", text)
+
+    def test_schedule_reserved_versions_are_safe_and_remain_separate_arguments(self):
+        text = SCHEDULE.read_text()
+        schedule = yaml.load(text, Loader=yaml.BaseLoader)
+        script = schedule["jobs"]["plan"]["steps"][1]["run"]
+        lines = script.splitlines()
+        start = next(index for index, line in enumerate(lines)
+                     if "if git ls-remote --exit-code" in line and "refs/heads/$branch" in line)
+        end = next(index for index in range(start, len(lines)) if lines[index].strip() == "fi")
+        fragment = "\n".join(lines[start:end + 1])
+        prefix = ["scripts/operations/release_pr.py", "--repository", "nwverse/persona", "--channel", "beta",
+                  "next-version", "--stable-tag", "v0.9.1", "--reserved"]
+        reserved_refs = ("a" * 40 + "\trefs/heads/release/0.9.1-beta.9\n"
+                         + "b" * 40 + "\trefs/heads/release/0.9.1-beta.10\n")
+        for name, refs, expected in (("multiple", reserved_refs, ["0.9.1-beta.9", "0.9.1-beta.10"]),
+                                     ("unterminated", reserved_refs.removesuffix("\n"), ["0.9.1-beta.9", "0.9.1-beta.10"]),
+                                     ("empty", "", [])):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                fake_bin = fixture / "bin"
+                fake_bin.mkdir()
+                git = fake_bin / "git"
+                git.write_text("#!/bin/sh\n"
+                               "if [ \"$1\" = ls-remote ] && [ \"$2\" = --heads ]; then\n"
+                               "  printf '%s' \"$RESERVED_REFS\"\n"
+                               "fi\n")
+                git.chmod(0o755)
+                python = fake_bin / "python3"
+                python.write_text("#!/bin/sh\n"
+                                  "printf '%s\\n' \"$@\" > \"$PYTHON_ARGV_LOG\"\n"
+                                  "printf '0.9.1-beta.11\\n'\n")
+                python.chmod(0o755)
+                argv_log = fixture / "python-argv.txt"
+                env = {"PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                       "RESERVED_REFS": refs, "PYTHON_ARGV_LOG": str(argv_log),
+                       "REPOSITORY": "nwverse/persona", "stable": "v0.9.1", "branch": "release/0.9.1-beta.2"}
+                case_fragment = fragment
+                if name == "unterminated":
+                    case_fragment = "\n".join(line for line in fragment.splitlines()
+                                              if "git ls-remote --heads" not in line)
+                    (fixture / "release-reserved.txt").write_text("0.9.1-beta.9\n0.9.1-beta.10")
+                result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + case_fragment], cwd=fixture, env=env,
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(argv_log.read_text().splitlines(), prefix + expected)
+        reserved_command = next(line for line in lines if "--reserved" in line)
+        self.assertNotRegex(reserved_command, r"--reserved\s+\$\(",
+                            "reserved versions must not use an unquoted command substitution (SC2046)")
 
     def test_verified_pr_merges_then_main_is_reverified_before_publication(self):
         text = PR.read_text()

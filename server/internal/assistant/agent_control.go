@@ -284,7 +284,7 @@ func (s *Service) adoptAgentFor(ctx context.Context, self, supervisor string, am
 			return Todo{}, false, err
 		}
 		t.Supervision = &v
-		s.setTaskStageKind(ctx, t.ID, "", "", taskStageKind(false, v.DoneWhen, t.PRURL), false)
+		s.restage(ctx, t.ID, nil) // by its new criteria; a read-only start still holds
 		return t, false, nil
 	}
 	previous, continuing := s.closedTodoOfAgent(am.ID, c.SessionID)
@@ -324,7 +324,7 @@ func (s *Service) adoptAgentFor(ctx context.Context, self, supervisor string, am
 		}
 		s.briefFor(ctx, s.callerOrigin(ctx, self), todo, doneWhen, expect) // before its agent is linked (task_brief.go)
 	}
-	s.setTaskStageKind(ctx, todo.ID, "", "", taskStageKind(false, v.DoneWhen, todo.PRURL), false)
+	s.restage(ctx, todo.ID, nil)
 	todo.Supervision = &v
 	if err := s.linkTodoAgent(ctx, todo.ID, am.ID, c.SessionID, title, c.Cwd, c.Agent); err != nil {
 		s.dropAdoption(ctx, todo.ID, err)

@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,7 +40,7 @@ var toolNames = []string{"ask_user", "notify_user", "supervision_finish", "sched
 	"conversations_list", "conversation_read", "conversation_rename", "conversation_archive", "conversation_unarchive",
 	"conversation_tags_set",
 	"conversation_new", "conversation_send", "task_plan", "task_plan_withdraw", "task_review", "task_scope", "task_decided", "task_start_screen", "task_start_keys", "task_retry",
-	"todo_repositories_get", "todo_repositories_set", "todo_repository_links_set", "todo_repository_links_add", "todo_list", "todo_get", "todo_create", "todo_update", "todo_complete", "todo_reopen", "todo_delete", "concern_report",
+	"todo_workspace", "todo_repositories_get", "todo_repositories_set", "todo_repository_links_set", "todo_repository_links_add", "todo_list", "todo_get", "todo_create", "todo_update", "todo_complete", "todo_reopen", "todo_delete", "concern_report",
 	"direction_name", "leader_progress"}
 
 // Tools are the assistant's tools (assistant.tools).
@@ -169,6 +170,8 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			}
 		}
 		return res, err
+	case "todo_workspace":
+		return s.toolTodoWorkspace(ctx, machine, self, args)
 	case "todo_repository_links_add":
 		return s.toolTodoRepositoryLinksAdd(ctx, machine, self, name, args)
 	case "todo_repositories_get", "todo_repositories_set", "todo_repository_links_set":
@@ -676,7 +679,8 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentStartTimeout)
 		defer cancel()
 		// The tab is named from the prompt as written; the agent gets its project's background before it (#2820).
-		params := map[string]any{"cwd": a.Cwd, "launcher": a.Launcher, "model": a.Model, "effort": a.Effort, "speed": a.Speed, "tab_name": s.tabName(sctx, a.Prompt)}
+		title := s.tabName(sctx, a.Prompt)
+		params := map[string]any{"cwd": a.Cwd, "launcher": a.Launcher, "model": a.Model, "effort": a.Effort, "speed": a.Speed, "tab_name": title, "title": title}
 		prompt := s.withCloseoutBrief(sctx, a.Prompt, false)
 		params["prompt"] = s.withProjectContext(sctx, am.ID, a.Cwd, self, prompt)
 		if a.Ultracode {
@@ -841,13 +845,14 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			if startResultUnknown(err) {
 				// The node may already have the session and a running agent although the answer never came back:
 				// do not report failure (the model would start it again, duplicating the run).
-				return s.startedWithoutAnswer(ctx, am, picked, a.Cwd, note, expectID, knownIDs, task, told), nil
+				return s.startedWithoutAnswer(ctx, am, picked, fit.snapshot, a.Cwd, note, expectID, knownIDs, task, told), nil
 			}
 			if ferr := s.failAgentStartTodo(ctx, task.ID, clip(oneLine(err.Error()), 200)); ferr != nil {
 				s.logf("task %s: fail: %v", task.ID, ferr)
 			}
 			return "", err
 		}
+		s.nameStartedAgent(sctx, am.ID, res.Session, title)
 		s.recordStartSuccess(ctx, am.ID, ranLauncher(launcher, res.Instead, res.Session))
 		if said := s.startInsteadNote(ctx, am, res.Instead, res.Session); said != "" {
 			note += " Note: " + said + "." // the engine ran another of the same kind, its default model, a lower effort (#8140)
@@ -856,7 +861,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			return s.waitAgentReply(ctx, receipt, inputID, wait, fixedWaitTarget(am.ID, res.Session.SessionID))
 		}
 		s.inboxAgentStarted(ctx, self, am.ID, res.Session.SessionID, a.Prompt) // an inbox event's conversation: its chain
-		closedDuringStart, linkErr := s.linkStartedAgentTask(ctx, task, am, a.Cwd, res.Session.SessionID)
+		closedDuringStart, linkErr := s.linkStartedAgentTask(ctx, task, am, a.Cwd, res.Session.SessionID, cmp.Or(res.Session.Agent, fit.snapshot))
 		warning := agentStartTaskWarning(closedDuringStart, linkErr)
 		return finish(fmt.Sprintf("Started on %s in %s: session %s, a task of this conversation (its card is in the conversation; "+
 			"%s).%s", am.Name, a.Cwd, res.Session.SessionID, told, note) + warning), nil
@@ -900,8 +905,8 @@ func startResultUnknown(err error) bool {
 
 // linkStartedAgentTask attaches a confirmed session to its prepared task. If the user closed that card while the start
 // was in flight, retain the Agent on the done card for the close loop to retire, for answered and unknown starts alike.
-func (s *Service) linkStartedAgentTask(ctx context.Context, task Todo, m Device, cwd, sid string) (bool, error) {
-	err := s.linkPreparedAgentTask(ctx, task, m, cwd, sid)
+func (s *Service) linkStartedAgentTask(ctx context.Context, task Todo, m Device, cwd, sid, agent string) (bool, error) {
+	err := s.linkPreparedAgentTask(ctx, task, m, cwd, sid, agent)
 	if err == nil {
 		s.retractStartUnknown(ctx, task.ID)
 		return false, nil
@@ -909,7 +914,7 @@ func (s *Service) linkStartedAgentTask(ctx context.Context, task Todo, m Device,
 	if !errors.Is(err, db.ErrTodoCompleted) {
 		return false, err
 	}
-	if err := s.linkTodoAgentOfDoneTask(ctx, task.ID, m.ID, sid, task.Title, cwd, ""); err != nil {
+	if err := s.linkTodoAgentOfDoneTask(ctx, task.ID, m.ID, sid, task.Title, cwd, agent); err != nil {
 		return true, err
 	}
 	s.retractStartUnknown(ctx, task.ID)
@@ -1007,11 +1012,12 @@ var liveSendWait = 90 * time.Second
 // built links it to the task made before the request, by creation_id or the hub-issued session id when available,
 // and by the older bounded adoption heuristic otherwise. A failed pre-start list disables only the heuristic, not an
 // exact expectID match. Otherwise the pending task stays visible for a later sessions.changed to complete the link.
-func (s *Service) startedWithoutAnswer(ctx context.Context, m Device, launcher, cwd, note, expectID string, knownIDs map[string]bool, task Todo, told string) string {
+// The confirmed session's Agent kind wins, with the explicitly resolved launcher kind as fallback (#11545).
+func (s *Service) startedWithoutAnswer(ctx context.Context, m Device, launcher, launcherKind, cwd, note, expectID string, knownIDs map[string]bool, task Todo, told string) string {
 	if list, err := s.sessions(ctx, m.ID); err == nil {
 		for _, sess := range list {
 			if sess.CreationID() == task.ID {
-				closed, linkErr := s.linkStartedAgentTask(ctx, task, m, cwd, sess.SessionID)
+				closed, linkErr := s.linkStartedAgentTask(ctx, task, m, cwd, sess.SessionID, cmp.Or(sess.Agent, launcherKind))
 				// The creation id proves which Agent this start made. Even when its link write fails, never turn that
 				// failure into permission to heuristically bind a different session (#5732).
 				return fmt.Sprintf("Started on %s in %s: session %s (the start took longer than the wait; the session was "+
@@ -1021,7 +1027,7 @@ func (s *Service) startedWithoutAnswer(ctx context.Context, m Device, launcher, 
 		}
 	}
 	if sess, ok := s.adoptStartedSession(ctx, m, launcher, cwd, expectID, knownIDs); ok {
-		closed, linkErr := s.linkStartedAgentTask(ctx, task, m, cwd, sess.SessionID)
+		closed, linkErr := s.linkStartedAgentTask(ctx, task, m, cwd, sess.SessionID, cmp.Or(sess.Agent, launcherKind))
 		// Adoption has already confirmed this session. A task-link write failure is a warning about that link, never
 		// evidence that the start's identity is unknown; keep the session id and prevent a duplicate start (#5732).
 		return fmt.Sprintf("Started on %s in %s: session %s (the start took longer than the wait; the session was "+

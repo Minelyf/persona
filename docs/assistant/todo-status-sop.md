@@ -51,7 +51,7 @@ The first rule that holds wins.
 | 4 | `agent_running` | An agent is working or starting | Working |
 | 5 | `closed` | `done_at` is set | Done immediately, regardless of age or Seen; explicit completion is never left open. A closed concern is the sole exception: it stays in Delivered · awaiting review while its completion is less than 24 hours old and unseen, then enters Done |
 | 5a | `parked` (web) | Open and the current review is parked | Parked until the hub changes its state, including past its fallback `until`; never Done just because its agent stopped |
-| 6 | `accepted` | The latest review accepted it and no review came since, even when the hub reopened it (see "Accepted tasks") | Done immediately, regardless of review age or Seen; acceptance is never left open |
+| 6 | `accepted` | The latest review accepted it and no review came since, even when the hub reopened it, unless a takeover started a new round (#11553; see "Accepted tasks") | Done immediately, regardless of review age or Seen; acceptance is never left open |
 | 7 | `finished_unseen` | `delivery.state` is `live`, but the task has not been accepted | Delivered · awaiting review, open until main-chat acceptance or explicit user completion; no 24-hour or 48-hour timeout, including after Seen |
 | 8 | `finished_unseen` | An agent finished a turn nobody has seen, the review is pending, or its ask says done / please verify; either not seen or acceptance is still required | Delivered · awaiting review |
 | 9 | `pr_open` | Fresh facts of one of its PRs (`pr_status` matching `pr_url`, or an earlier PR in `other_prs`, #7935) say open and non-draft; no active agent or owner decision, and not accepted or delivered (rules 6 and 7 keep their finished semantics whatever its PR facts say; an open concern, which those rules skip, still waits for merge). Stale, absent or mismatched facts do not imply waiting for merge; merged/closed facts suppress legacy `delivery.state=pr` | Parked (merge wait) on the web; Waiting for merge on other clients |
@@ -352,6 +352,16 @@ The acceptance now stands until a newer review replaces it (`acceptanceStands` i
   covers judged ones ("5/5"). The next review, if the supervisor runs one, judges them as usual.
 
 A task the user reopens by hand also keeps the accepted verdict until the next review; the checkbox closes it again.
+
+**A new Agent from a plan starts a new round, not more work** (#11553). When a plan's task takes the to-do over with
+a new Agent (`task_plan` with `continues`, or with its `todo_id`), the hub keeps the earlier `accepted` or
+`cancelled` review in `reviews` as history. It puts the ledger back to going on: `state` "", `round` 0, no owner wait
+(`startSupervisionRound` in `server/internal/assistant/supervise.go`). Rule 6 no longer applies to it. The row shows
+**Supervised**, and the to-do stays in Working, Waiting on you or Other open while the new Agent works or stops. The new
+round's stops reach its supervisor like any task's. Before, the continued to-do kept the earlier round's green
+**Accepted** in Working, went to Just finished whenever its new Agent stopped, and its supervisor never heard of a stop
+short of done. A ledger continued before this change keeps its old state until its next review: records are not
+migrated.
 
 ## Clients
 

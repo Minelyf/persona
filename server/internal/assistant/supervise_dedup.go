@@ -82,6 +82,19 @@ func keyIsNews(kind string) bool {
 	return false
 }
 
+// keptUntilChange: a routine signal whose fingerprint (the agent's last words, its cards, its report, its step) is the
+// whole of what the supervisor needs to know about it. The same fingerprint is not told again while the task is open
+// (#11614): before, it woke the supervisor again every superviseDedupWindow although nothing had changed. A new turn
+// with other words, a new card or a new report changes the fingerprint and is told as before. Signals that wait on a
+// decision keep the short window or their own news key (keyIsNews).
+func keptUntilChange(kind string) bool {
+	switch kind {
+	case sigIdle, sigUnjudged, sigStalled, sigNoProgress, sigReview, sigReport, sigOrphaned, sigInterrupted, sigOverdue:
+		return true
+	}
+	return false
+}
+
 type supervisionDelivery int
 
 const (
@@ -137,7 +150,7 @@ func (s *Service) reserveSupervisionDelivery(ctx context.Context, entries []prom
 			pending = append(pending, id)
 		}
 		fingerprint := superviseFingerprint{Hash: hash, At: now.UTC(), Permanent: signals[i].Kind == sigPRConflict || signals[i].Kind == sigDraftPR}
-		if signals[i].Kind == sigAllStopped {
+		if signals[i].Kind == sigAllStopped || keptUntilChange(signals[i].Kind) {
 			fingerprint.Todo = signals[i].Todo
 		}
 		if g := signals[i]; g.Kind == sigInbox && g.Inbox != nil && g.Inbox.ToAgent == "unhandled" {

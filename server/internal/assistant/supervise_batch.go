@@ -12,6 +12,34 @@ import (
 
 const maxSupervisionBatchMinutes = 1440
 
+// superviseRoutineCooldown is how long routine signals for a conversation wait after a supervision message went to it,
+// so that several tasks' idle, report and all_stopped signals arriving one after another make one wake, not one every
+// superviseUrgentEvery (#11614). Every wake re-reads the supervisor's whole context, which is what costs. Signals that
+// wait on a decision (supervisionBatchImmediate) never wait for it and take the held ones with them.
+var superviseRoutineCooldown = 10 * time.Minute
+
+// routineCooldown is p's cooldown, or superviseRoutineCooldown bounded by five times the shortest spacing: the hub's
+// tests that shorten the spacing get a cooldown as short, production gets the full ten minutes.
+func (p superviseTimings) routineCooldown() time.Duration {
+	if p.cooldown > 0 {
+		return p.cooldown
+	}
+	return min(superviseRoutineCooldown, 5*min(p.urgent, p.every))
+}
+
+// toldRecipient notes that a supervision message went in or queued for conversation to at now.
+func (s *Service) toldRecipient(to string, now time.Time) {
+	b := &s.supervise
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.told == nil {
+		b.told = map[string]time.Time{}
+	}
+	if now.After(b.told[to]) {
+		b.told[to] = now
+	}
+}
+
 // supervisionBatchMinutesOf is the additional per-recipient routine batching interval. Zero keeps the legacy shared
 // gather and spacing exactly as they were. Invalid saved values fail back to that behavior.
 func supervisionBatchMinutesOf(v Settings) int {
@@ -25,11 +53,13 @@ func (s *Service) supervisionBatchInterval(ctx context.Context) time.Duration {
 	return time.Duration(supervisionBatchMinutesOf(s.settings(ctx))) * time.Minute
 }
 
-// supervisionBatchImmediate bypasses only the optional per-recipient batch. The legacy 15-second gather still applies.
+// supervisionBatchImmediate bypasses the optional per-recipient batch and the routine cooldown. The legacy 15-second
+// gather still applies.
 // A recipient's whole digest goes together when any signal in it is immediate.
 func supervisionBatchImmediate(g superviseSignal) bool {
 	switch g.Kind {
-	case sigNeedsYou, sigAsk, sigEscalated, sigDecide, sigDecisionReply, sigParkDecided, sigOwnerCannot, sigRecheck, sigUndecidable, sigFailed:
+	case sigNeedsYou, sigAsk, sigEscalated, sigDecide, sigDecisionReply, sigParkDecided, sigOwnerCannot, sigRecheck, sigUndecidable, sigFailed,
+		sigParkedDue: // a parked task whose time came: the supervisor set that time itself (#11614)
 		return true
 	}
 	return false
@@ -63,11 +93,13 @@ func supervisionBatchDeferred(g superviseSignal, now time.Time) bool {
 	return !supervisionBatchImmediate(g) && g.batchUntil.After(now.Add(time.Second))
 }
 
-// gateDigestBatches holds routine groups until their own recipient's deadline. An immediate group also releases that
-// recipient's previously held routine signals, so a mixed digest is delivered whole. Returned groups still use the
-// existing deliverDigest path, including its busy-recipient relay queue.
-func (s *Service) gateDigestBatches(order []string, groups map[string][]superviseSignal, now time.Time, interval time.Duration) []string {
-	if interval <= 0 {
+// gateDigestBatches holds routine groups until their own recipient's deadline: with a batch interval, that interval
+// after the first routine signal; without one, the routine cooldown after the last supervision message that went to
+// the recipient (none recently: no wait). An immediate group also releases that recipient's previously held routine
+// signals, so a mixed digest is delivered whole. Returned groups still use the existing deliverDigest path, including
+// its busy-recipient relay queue.
+func (s *Service) gateDigestBatches(order []string, groups map[string][]superviseSignal, now time.Time, interval, cooldown time.Duration) []string {
+	if interval <= 0 && cooldown <= 0 {
 		return order
 	}
 	out := make([]string, 0, len(order))
@@ -76,10 +108,13 @@ func (s *Service) gateDigestBatches(order []string, groups map[string][]supervis
 		immediate := slices.ContainsFunc(list, supervisionBatchImmediate)
 		b := &s.supervise
 		b.mu.Lock()
-		deadline := b.batch[to]
+		deadline, told := b.batch[to], b.told[to]
 		b.mu.Unlock()
 		if !immediate {
-			if deadline.IsZero() {
+			if deadline.IsZero() && interval <= 0 && !told.IsZero() {
+				deadline = told.Add(cooldown)
+			}
+			if deadline.IsZero() && interval > 0 {
 				anchor := now
 				for _, g := range list {
 					if !g.At.IsZero() && g.At.Before(anchor) {

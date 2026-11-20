@@ -163,6 +163,7 @@ type superviseBook struct {
 	last    time.Time                    // when the last supervision message went out
 	queued  map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
 	batch   map[string]time.Time         // conversation → its routine batch's first-signal deadline
+	told    map[string]time.Time         // conversation → when a supervision message last went in or queued for it (in memory)
 	timer   *time.Timer
 	timerAt time.Time
 
@@ -197,6 +198,9 @@ func (b *superviseBook) init() {
 // package's superviseGather, superviseEvery or superviseUrgentEvery).
 type superviseTimings struct {
 	gather, every, urgent time.Duration
+	// cooldown: how long routine signals for a conversation wait after a supervision message went to it (zero:
+	// routineCooldown's default).
+	cooldown time.Duration
 }
 
 // superviseTimings are s's own timings, the package's for each one it does not set. Tests set them on their Service,
@@ -229,6 +233,9 @@ func digestWait(now, last time.Time, pending []superviseSignal, p superviseTimin
 			if next := last.Add(gap); next.After(at) {
 				at = next
 			}
+		}
+		if !supervisionBatchImmediate(g) && g.batchUntil.After(at) {
+			at = g.batchUntil // held for its recipient's routine cooldown (gateDigestBatches)
 		}
 		if due.IsZero() || at.Before(due) {
 			due = at

@@ -1,0 +1,267 @@
+package assistant
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nwverse/persona/server/internal/prompts"
+	"github.com/nwverse/persona/server/internal/proto"
+	"github.com/nwverse/persona/server/internal/rpc"
+)
+
+// Supervising conversations are woken only for what changed or needs a decision (#11614): deduplication, merging,
+// messages that do not wake, and urgent signals that still go at once.
+
+// Deduplication: an unchanged routine signal is not told again while the task is open, however long it waits; a
+// changed one is told at once. A decision-bearing signal keeps the short window.
+func TestRoutineSignalUnchangedIsNotToldAgainWhileTheTaskIsOpen(t *testing.T) {
+	st := &memStore{}
+	s, _ := newQuietServiceOn(t, st)
+	ctx, now := context.Background(), time.Now()
+	reserve := func(e prompts.SuperviseEntry, g superviseSignal, at time.Time) int {
+		t.Helper()
+		out, _, _, err := s.reserveSupervision(ctx, []prompts.SuperviseEntry{e}, []superviseSignal{g}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(out)
+	}
+	for _, kind := range []string{sigIdle, sigUnjudged, sigStalled, sigNoProgress, sigReview, sigReport, sigOrphaned, sigInterrupted, sigOverdue} {
+		e := prompts.SuperviseEntry{ID: "todo_" + kind, Last: "Stopped: waiting for the build."}
+		g := superviseSignal{Todo: e.ID, Kind: kind, Key: "turn-a"}
+		if n := reserve(e, g, now); n != 1 {
+			t.Fatalf("%s: first signal told %d times", kind, n)
+		}
+		g.Key = "turn-b" // a later sweep, or a turn that ended with the same words
+		if n := reserve(e, g, now.Add(3*time.Hour)); n != 0 {
+			t.Fatalf("%s: the unchanged state woke the supervisor again after 3 hours", kind)
+		}
+		changed := e
+		changed.Last = "Stopped: the build failed."
+		if n := reserve(changed, g, now.Add(4*time.Hour)); n != 1 {
+			t.Fatalf("%s: a changed state was not told", kind)
+		}
+	}
+	// Restarted, the same history still holds (it lives in the store).
+	again, _ := newQuietServiceOn(t, st)
+	e := prompts.SuperviseEntry{ID: "todo_" + sigIdle, Last: "Stopped: the build failed."}
+	if out, _, _, err := again.reserveSupervision(ctx, []prompts.SuperviseEntry{e}, []superviseSignal{{Todo: e.ID, Kind: sigIdle, Key: "turn-c"}}, now.Add(5*time.Hour)); err != nil || len(out) != 0 {
+		t.Fatalf("after a restart the unchanged state was told again: %v, %v", out, err)
+	}
+	// A question waiting for an answer keeps the 30-minute window: it is told again if still unanswered.
+	q := prompts.SuperviseEntry{ID: "todo_question", Last: "Which branch?", Ask: "Which branch should I use?"}
+	needs := superviseSignal{Todo: q.ID, Kind: sigNeedsYou, Key: "card-1"}
+	if n := reserve(q, needs, now); n != 1 {
+		t.Fatal("needs_you not told")
+	}
+	if n := reserve(q, needs, now.Add(10*time.Minute)); n != 0 {
+		t.Fatal("needs_you told twice within the window")
+	}
+	if n := reserve(q, needs, now.Add(31*time.Minute)); n != 1 {
+		t.Fatal("an unanswered question was not told again after the window")
+	}
+}
+
+// Merging: after a supervision message went to a conversation, routine signals for it wait out the cooldown and then
+// go together; a conversation told nothing recently is not held; another conversation is not held by this one's.
+func TestRoutineSignalsForOneConversationWaitOutTheCooldownTogether(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	const cooldown = 10 * time.Minute
+	s := &Service{}
+	s.supervise.init()
+	first := map[string][]superviseSignal{"lead": {{Todo: "todo_a", Kind: sigIdle, Key: "a1", At: now}}}
+	if order := s.gateDigestBatches([]string{"lead"}, first, now, 0, cooldown); !slices.Equal(order, []string{"lead"}) {
+		t.Fatalf("a conversation told nothing recently was held: %v", order)
+	}
+	s.toldRecipient("lead", now)
+
+	at := now.Add(2 * time.Minute)
+	groups := map[string][]superviseSignal{
+		"lead":  {{Todo: "todo_b", Kind: sigIdle, Key: "b1", At: at}},
+		"other": {{Todo: "todo_c", Kind: sigReport, Key: "c1", At: at}},
+	}
+	if order := s.gateDigestBatches([]string{"lead", "other"}, groups, at, 0, cooldown); !slices.Equal(order, []string{"other"}) {
+		t.Fatalf("released %v, want only the conversation not told recently", order)
+	}
+	at = at.Add(time.Minute)
+	groups = map[string][]superviseSignal{"lead": {{Todo: "todo_d", Kind: sigAllStopped, Key: "d1", At: at}}}
+	if order := s.gateDigestBatches([]string{"lead"}, groups, at, 0, cooldown); len(order) != 0 {
+		t.Fatalf("a second routine signal within the cooldown went out: %v", order)
+	}
+	due := now.Add(cooldown)
+	var held []superviseSignal
+	for _, g := range s.supervise.pending {
+		if g.batchTo != "lead" || !g.batchUntil.Equal(due) {
+			t.Fatalf("held signal without the cooldown deadline: %+v", g)
+		}
+		held = append(held, g)
+	}
+	if len(held) != 2 {
+		t.Fatalf("held %d signals, want 2", len(held))
+	}
+	// The scheduler does not wake before the deadline, even with the shared spacing long past.
+	if wait, ok := digestWait(at, time.Time{}, held, shortSuperviseTimings); !ok || wait != due.Sub(at) {
+		t.Fatalf("digest due in %v (%v), want %v", wait, ok, due.Sub(at))
+	}
+	// At the deadline both go as one message.
+	groups = map[string][]superviseSignal{"lead": held}
+	if order := s.gateDigestBatches([]string{"lead"}, groups, due, 0, cooldown); !slices.Equal(order, []string{"lead"}) || len(groups["lead"]) != 2 {
+		t.Fatalf("at the deadline: order %v, group %v", order, groups["lead"])
+	}
+	if len(s.supervise.pending) != 0 || !s.supervise.batch["lead"].IsZero() {
+		t.Fatalf("released conversation still holds: pending=%v batch=%v", s.supervise.pending, s.supervise.batch)
+	}
+}
+
+// The cooldown's default: ten minutes in production, five times the shortest spacing where a test shortened it.
+func TestRoutineCooldownDefault(t *testing.T) {
+	if got := (superviseTimings{gather: superviseGather, every: superviseEvery, urgent: superviseUrgentEvery}).routineCooldown(); got != 10*time.Minute {
+		t.Fatalf("production cooldown %v", got)
+	}
+	if got := shortSuperviseTimings.routineCooldown(); got != 5*shortSuperviseTimings.urgent {
+		t.Fatalf("short cooldown %v", got)
+	}
+	if got := (superviseTimings{every: time.Hour, urgent: time.Hour, cooldown: time.Second}).routineCooldown(); got != time.Second {
+		t.Fatalf("explicit cooldown %v", got)
+	}
+}
+
+// End to end: two routine signals in a row make one wake; a decision-bearing one goes at once and takes the held one.
+func TestRoutineSignalsMergeIntoOneWakeEndToEnd(t *testing.T) {
+	s, f, todo := newSupervisedService(t)
+	shortSupervise(t, s)
+	s.superviseTimes.cooldown = time.Hour
+	s.queueSignal(superviseSignal{Todo: todo.ID, Kind: sigFailed, Key: "start-1", Detail: "start failed once"})
+	waitFor(t, "the first message", func() bool { return len(assistantSendsTo(f, "conv1")) == 1 })
+	routine := superviseSignal{Todo: todo.ID, Kind: sigStalled, Key: "stall", Detail: "routine detail", Minutes: 50}
+	s.queueSignal(routine)
+	waitFor(t, "the second routine signal to be held", func() bool {
+		s.supervise.mu.Lock()
+		defer s.supervise.mu.Unlock()
+		return !s.supervise.pending[routine.id()].batchUntil.IsZero()
+	})
+	if got := len(assistantSendsTo(f, "conv1")); got != 1 {
+		t.Fatalf("a routine signal within the cooldown woke the supervisor: %d sends", got)
+	}
+	s.queueSignal(superviseSignal{Todo: todo.ID, Kind: sigFailed, Key: "start-2", Detail: "start failed again"})
+	waitFor(t, "the urgent message", func() bool { return len(assistantSendsTo(f, "conv1")) == 2 })
+	text, _ := lastSendTo(f, "conv1")["text"].(string)
+	for _, want := range []string{"signal=" + sigFailed, "signal=" + sigStalled, "start failed again", "routine detail"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the urgent message lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+// Urgent signals: needs_you, failed, cards, the owner's decisions and a parked task whose time came never wait for
+// the cooldown, and release what waits for the same conversation with them.
+func TestDecisionSignalsBypassTheCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	const cooldown = 10 * time.Minute
+	for _, kind := range []string{sigNeedsYou, sigFailed, sigAsk, sigDecide, sigDecisionReply, sigParkDecided, sigOwnerCannot, sigRecheck, sigUndecidable, sigEscalated, sigParkedDue} {
+		s := &Service{}
+		s.supervise.init()
+		s.toldRecipient("lead", now)
+		routine := map[string][]superviseSignal{"lead": {{Todo: "todo_routine", Kind: sigIdle, Key: "r", At: now.Add(time.Minute)}}}
+		if order := s.gateDigestBatches([]string{"lead"}, routine, now.Add(time.Minute), 0, cooldown); len(order) != 0 {
+			t.Fatalf("%s: the routine signal was not held", kind)
+		}
+		at := now.Add(2 * time.Minute)
+		urgent := map[string][]superviseSignal{"lead": {{Todo: "todo_urgent", Kind: kind, Key: "u", At: at}}}
+		order := s.gateDigestBatches([]string{"lead"}, urgent, at, 0, cooldown)
+		if !slices.Equal(order, []string{"lead"}) {
+			t.Fatalf("%s waited for the cooldown", kind)
+		}
+		kinds := []string{}
+		for _, g := range urgent["lead"] {
+			kinds = append(kinds, g.Kind)
+		}
+		if !slices.Contains(kinds, kind) || !slices.Contains(kinds, sigIdle) {
+			t.Fatalf("%s: the message carries %v, want it and the held idle", kind, kinds)
+		}
+		// Nor does the scheduler delay it.
+		g := superviseSignal{Todo: "todo_urgent", Kind: kind, At: at, batchUntil: at.Add(time.Hour)}
+		if wait, ok := digestWait(at, time.Time{}, []superviseSignal{g}, shortSuperviseTimings); !ok || wait > shortSuperviseTimings.gather {
+			t.Fatalf("%s due in %v", kind, wait)
+		}
+	}
+}
+
+// No wake: conversation_send with wake: false starts no turn; the receiver reads it with the next message it gets,
+// and only then is it let go. A quote, the owner's request, always wakes.
+func TestConversationSendWithoutWake(t *testing.T) {
+	s, f := newQuietService(t)
+	f.known["conv2"] = true
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "conv2", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	ctx := context.Background()
+	out, err := s.toolConversationSend(ctx, "conv2", []byte(`{"id":"conv1","text":"Got it, thanks.","wake":false}`))
+	if err != nil || !strings.Contains(out, "without waking it") {
+		t.Fatalf("wake false: %q, %v", out, err)
+	}
+	if n := f.sentTo("conv1"); n != 0 {
+		t.Fatalf("wake false started %d turns", n)
+	}
+	if n := s.queuedFor("conv1"); n != 0 {
+		t.Fatalf("wake false went into the delivery queue (%d)", n)
+	}
+	if labels, ok := s.queuedRelays(); !ok || len(labels["conv1"]) != 1 || !strings.Contains(labels["conv1"][0], "Got it, thanks.") {
+		t.Fatalf("the kept message is not shown waiting: %v", labels)
+	}
+	if _, err := s.toolConversationSend(ctx, "conv2", []byte(`{"id":"conv1","text":"from the owner","quote":"latest","wake":false}`)); err == nil {
+		t.Fatal("a quote was kept without waking its receiver")
+	}
+
+	// A send that does not go in keeps it.
+	f.mu.Lock()
+	f.failAssistant = &rpc.Error{Message: "the launcher did not start, the message was not delivered"}
+	f.mu.Unlock()
+	_ = s.call(ctx, "server", DeviceAssistantSend, map[string]any{"session_id": "conv1", "text": "will fail", "resume_only": true}, nil)
+	f.mu.Lock()
+	f.failAssistant = nil
+	f.mu.Unlock()
+	if n := len(laterFor(s, "conv1")); n != 1 {
+		t.Fatalf("a failed send let go of the kept message (%d left)", n)
+	}
+
+	// The next message that goes in carries it, and then it is gone.
+	before := f.sentTo("conv1")
+	if _, err := s.toolConversationSend(ctx, "conv2", []byte(`{"id":"conv1","text":"Please check the build."}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the next message to go in", func() bool { return f.sentTo("conv1") > before })
+	texts := f.noticesTo("conv1")
+	last := texts[len(texts)-1]
+	if !strings.Contains(last, "Got it, thanks.") || !strings.Contains(last, "Please check the build.") ||
+		strings.Index(last, "Got it, thanks.") > strings.Index(last, "Please check the build.") {
+		t.Fatalf("the next message does not carry the kept one in front:\n%s", last)
+	}
+	if words := relayWords(last); strings.Contains(words, "Got it, thanks.") || !strings.HasSuffix(strings.TrimSpace(words), "Please check the build.") {
+		t.Fatalf("the kept block is not a context block in front (the delivery check reads the words):\n%s", words)
+	}
+	if n := len(laterFor(s, "conv1")); n != 0 {
+		t.Fatalf("%d kept after the message carrying them went in", n)
+	}
+}
+
+// laterFor is what is kept for conversation id (relay_later.go).
+func laterFor(s *Service, id string) []relayMsg {
+	b := &s.relays
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.st.Later[id])
+}
+
+// The block that carries kept messages, in each language (prompts/assistant/relay_later.md).
+func TestGoldenRelayLater(t *testing.T) {
+	items := []prompts.RelayLaterItem{
+		{FromID: "conv-example", FromTitle: "Research", At: "11-20 10:00", Text: "Got it, thanks.\nThe build is green."},
+		{FromID: "conv-other", FromTitle: "Planning", At: "11-20 10:05", Text: "FYI: the release moved to Friday."},
+	}
+	golden(t, "relay_later", prompts.RenderRelayLater(prompts.RelayLater{Items: items}))
+	golden(t, "relay_later.en", prompts.RenderRelayLater(prompts.RelayLater{Language: "English", Items: items}))
+	golden(t, "relay_later.ja", prompts.RenderRelayLater(prompts.RelayLater{Language: "日本語", Items: items}))
+}

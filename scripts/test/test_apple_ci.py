@@ -85,15 +85,20 @@ class AppleCIPreparationTests(unittest.TestCase):
         commands = [line.strip() for line in packages.splitlines() if "ci_run 'PersonaSSH " in line]
         self.assertEqual(len(commands), 1)
         command = commands[0]
+        self.assertIn('900 env PERSONA_SSH_TRACE="$OUTPUT/native-ssh-trace.log" xcrun swift test', command)
         self.assertLess(script.index(command), script.index('Unsigned iOS and embedded watch/extensions build'))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            output = root / 'output directory'
+            output.mkdir()
             xcrun = root / 'xcrun'
-            xcrun.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$CALL_LOG"\nexit "$SSH_STATUS"\n')
+            xcrun.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$CALL_LOG"\n'
+                             'printf "synthetic SSH trace\\n" > "$PERSONA_SSH_TRACE"\nexit "$SSH_STATUS"\n')
             xcrun.chmod(0o755)
             log = root / 'commands.log'
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
-                       SOURCE=str(root / 'source snapshot'), SPM=str(root / 'spm cache'), CALL_LOG=str(log))
+                       SOURCE=str(root / 'source snapshot'), SPM=str(root / 'spm cache'),
+                       OUTPUT=str(output), CALL_LOG=str(log))
             shell = 'source scripts/ci/common.sh\n' + command + '\nprintf "ssh-lane-continued\\n"\n'
             for status in (0, 42):
                 with self.subTest(status=status):
@@ -106,6 +111,7 @@ class AppleCIPreparationTests(unittest.TestCase):
                         'swift', 'test', '--package-path', env['SOURCE'] + '/apple/Packages/PersonaSSH',
                         '--scratch-path', env['SPM'] + '/PersonaSSH',
                     ])
+                    self.assertEqual((output / 'native-ssh-trace.log').read_text(), 'synthetic SSH trace\n')
                     self.assertEqual('ssh-lane-continued' in result.stdout, status == 0)
                     self.assertIn('PASS' if status == 0 else 'FAIL', result.stdout)
 
@@ -207,10 +213,12 @@ class AppleFailureDiagnosticsTests(unittest.TestCase):
             root = Path(directory)
             output, destination = root / 'output', root / 'artifacts'
             output.mkdir()
-            for name in ('simulator.log', 'simulator-boot.log', 'simulator-readiness.log', 'runtimes-iOS-before.json'):
+            for name in ('simulator.log', 'simulator-boot.log', 'simulator-readiness.log', 'native-ssh-trace.log',
+                         'runtimes-iOS-before.json'):
                 (output / name).write_text('diagnostic fixture')
             (output / 'config.json').write_text('configuration must stay in output')
             (output / 'private.key').write_text('key fixture must stay in output')
+            (output / 'native-ssh-trace-private.log').write_text('unlisted trace must stay in output')
             result = output / 'ios-unit.xcresult'
             result.mkdir()
             (result / 'summary.json').write_text('test results')
@@ -228,12 +236,14 @@ class AppleFailureDiagnosticsTests(unittest.TestCase):
             self.assertEqual(calls[1][1]['timeout'], 30)
             self.assertEqual((destination / 'disk-space.txt').read_text(), 'disk space diagnostic')
             self.assertEqual({path.name for path in destination.iterdir()}, {
-                'simulator.log', 'simulator-boot.log', 'simulator-readiness.log', 'runtimes-iOS-before.json',
+                'simulator.log', 'simulator-boot.log', 'simulator-readiness.log', 'native-ssh-trace.log',
+                'runtimes-iOS-before.json',
                 'ios-unit.xcresult', 'simctl-list.json', 'simctl-list.stderr.txt', 'simctl-list.status.txt',
                 'disk-space.txt', 'disk-space.stderr.txt', 'disk-space.status.txt',
                 'simulator-launch.status.txt',
             })
             self.assertEqual((destination / 'ios-unit.xcresult/summary.json').read_text(), 'test results')
+            self.assertEqual((destination / 'native-ssh-trace.log').read_text(), 'diagnostic fixture')
             self.assertFalse((destination / 'ios-unit.xcresult/external-key').exists())
 
     def test_unavailable_simctl_still_retains_existing_logs(self):

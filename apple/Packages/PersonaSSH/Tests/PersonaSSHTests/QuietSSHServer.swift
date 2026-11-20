@@ -23,20 +23,40 @@ final class QuietSSHServer: @unchecked Sendable {
             connection.start(queue: self.queue)
             self.receive(connection)
         }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let waiting = Mutex<CheckedContinuation<Void, Error>?>(continuation)
-            listener.stateUpdateHandler = { status in
-                let result: Result<Void, Error>
-                switch status {
-                case .ready: result = .success(())
-                case .failed(let error): result = .failure(error)
-                case .cancelled: result = .failure(CancellationError())
-                default: return
+        let waiting = Mutex<(continuation: CheckedContinuation<Void, Error>?, cancelled: Bool)>((nil, false))
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let canStart = waiting.withLock { value in
+                    guard !value.cancelled else { return false }
+                    value.continuation = continuation
+                    return true
                 }
-                let ready = waiting.withLock { value in defer { value = nil }; return value }
-                ready?.resume(with: result)
+                guard canStart else { continuation.resume(throwing: CancellationError()); return }
+                listener.stateUpdateHandler = { [weak self] status in
+                    let result: Result<Void, Error>
+                    switch status {
+                    case .ready: result = .success(())
+                    case .failed(let error), .waiting(let error): result = .failure(error)
+                    case .cancelled: result = .failure(CancellationError())
+                    default: return
+                    }
+                    let ready = waiting.withLock { value in defer { value.continuation = nil }; return value.continuation }
+                    ready?.resume(with: result)
+                    if case .failure = result { self?.listener.cancel() }
+                }
+                listener.start(queue: queue)
             }
-            listener.start(queue: queue)
+            try Task.checkCancellation()
+        } onCancel: {
+            let ready = waiting.withLock { value in
+                value.cancelled = true
+                defer { value.continuation = nil }
+                return value.continuation
+            }
+            self.listener.cancel()
+            // Do not depend on Network.framework delivering .cancelled: setup may not have started yet.
+            ready?.resume(throwing: CancellationError())
         }
     }
 

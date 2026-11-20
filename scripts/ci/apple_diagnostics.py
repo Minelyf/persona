@@ -8,7 +8,7 @@ import subprocess
 import apple_launch_diagnostics
 
 
-LOGS = ("simulator.log", "simulator-boot.log", "simulator-readiness.log")
+LOGS = ("simulator.log", "simulator-boot.log", "simulator-readiness.log", "native-ssh-trace.log")
 
 
 def collect(output, destination, runner=subprocess.run):

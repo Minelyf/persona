@@ -36,7 +36,7 @@ func (s *Service) startDefaultsRoutes() {
 		var in struct {
 			StartDefaults *StartDefaultsPolicy `json:"start_defaults"`
 		}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, startDefaultsBodyLimit))
 		dec.DisallowUnknownFields() // a misspelt field must not silently do nothing
 		if err := dec.Decode(&in); err != nil {
 			apierr.Write(w, http.StatusBadRequest, err)

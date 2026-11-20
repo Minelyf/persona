@@ -85,6 +85,14 @@ func TestStartDefaultsAliasConflictsAndUnknownFields(t *testing.T) {
 		{"misspelt applies_when", `{"start_defaults":{"rules":[{"applies_whenx":{},"then":{"effort":"max"}}]}}`, http.StatusBadRequest},
 		{"misspelt candidates", `{"start_defaults":{"rules":[{"when":{},"then":{"candidatez":[{"name":"deep"}]}}]}}`, http.StatusBadRequest},
 		{"unknown match field", `{"start_defaults":{"rules":[{"applies_when":{"rol":"worker"},"then":{"effort":"max"}}]}}`, http.StatusBadRequest},
+		// An explicit null is present on the wire and must not slip past the conflict check the way a decoded nil
+		// pointer would (#11719 review): a null beside a real value is a disagreement.
+		{"null match beside a real match", `{"start_defaults":{"rules":[{"when":null,"applies_when":{"role":"leader"},"then":{"effort":"max"}}]}}`, http.StatusBadRequest},
+		{"real match beside a null match", `{"start_defaults":{"rules":[{"when":{"role":"worker"},"applies_when":null,"then":{"effort":"max"}}]}}`, http.StatusBadRequest},
+		{"null list beside a real list", `{"start_defaults":{"rules":[{"when":{},"then":{"presets":null,"candidates":[{"name":"deep"}]}}]}}`, http.StatusBadRequest},
+		{"real list beside a null list", `{"start_defaults":{"rules":[{"when":{},"then":{"presets":[{"name":"deep"}],"candidates":null}}]}}`, http.StatusBadRequest},
+		{"both matches null", `{"start_defaults":{"rules":[{"when":null,"applies_when":null,"then":{"effort":"max"}}]}}`, http.StatusOK},
+		{"both lists null", `{"start_defaults":{"rules":[{"when":{},"then":{"presets":null,"candidates":null,"effort":"max"}}]}}`, http.StatusOK},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if code, got := putStartDefaults(t, s, roleFull, "", c.body); code != c.code {
@@ -425,5 +433,39 @@ func TestStartDefaultsConvergedExpiryUnchanged(t *testing.T) {
 	setSettings(t, s, func(v *Settings) { v.StartDefaults.ExpiresAt = &past })
 	if p := s.activeStartDefaults(context.Background()); p != nil {
 		t.Fatalf("an expired policy is still in force: %+v", p)
+	}
+}
+
+// A policy at the very top of every bound must still round-trip through the dual-name GET within the write body
+// limit: 16 rules of 16 candidates each, every name 64 runes, every priority and weight at its maximum. The write
+// accepts one name, the read answers both, and that read is itself a valid write body.
+func TestStartDefaultsRoundTripStaysWithinBodyLimit(t *testing.T) {
+	s, _ := defaultsHub(t)
+	rules := make([]StartDefaultsRule, 0, startDefaultsMaxRules)
+	for i := 0; i < startDefaultsMaxRules; i++ {
+		cands := make([]StartDefaultsPreset, 0, startDefaultsMaxPresets)
+		for j := 0; j < startDefaultsMaxPresets; j++ {
+			cands = append(cands, StartDefaultsPreset{Name: strings.Repeat("é", 64), Priority: startDefaultsMaxPriority, Weight: startDefaultsMaxWeight})
+		}
+		rules = append(rules, StartDefaultsRule{When: StartDefaultsMatch{Role: "worker"}, Then: StartDefaultsThen{Presets: cands, Effort: "max"}})
+	}
+	body, err := json.Marshal(map[string]any{"start_defaults": StartDefaultsPolicy{Rules: rules}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, got := putStartDefaults(t, s, roleFull, "", string(body)); code != http.StatusOK {
+		t.Fatalf("the maximum single-name policy was refused: %d %s", code, got[:200])
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/start-defaults", nil))
+	got := rec.Body.Bytes()
+	if len(got) >= startDefaultsBodyLimit {
+		t.Fatalf("the dual-name read is %d bytes, at or over the %d-byte write limit; a GET-to-PUT round-trip would break",
+			len(got), startDefaultsBodyLimit)
+	}
+	// The read carries both names with equal values, so it is itself accepted as a write (this is what an older or
+	// newer client does when it saves the policy back untouched).
+	if code, out := putStartDefaults(t, s, roleFull, "", string(got)); code != http.StatusOK {
+		t.Fatalf("the dual-name read could not be written back: %d %s", code, out[:200])
 	}
 }

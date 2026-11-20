@@ -38,7 +38,7 @@ func (s *Service) startDefaultsPreviewRoutes() {
 			} `json:"caller"`
 			StartDefaults *StartDefaultsPolicy `json:"start_defaults,omitempty"`
 		}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, startDefaultsBodyLimit))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&in); err != nil {
 			apierr.Write(w, http.StatusBadRequest, err)

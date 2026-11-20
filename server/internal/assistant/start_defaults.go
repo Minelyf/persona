@@ -82,6 +82,11 @@ const (
 	startDefaultsMaxWeight   = 1000
 	startDefaultsMaxPriority = 1000
 	startDefaultsMaxExpiry   = time.Hour
+	// startDefaultsBodyLimit bounds a policy write and a preview. Reads answer both the current and the legacy field
+	// names, so a round-tripped body can hold every rule and candidate twice: the worst case (16 rules × 16 candidates
+	// of 64 runes each, at the highest weight and priority) stays comfortably under 256 KiB, while a single-name body
+	// of the same policy is roughly half that. A client may always write just one name; both are accepted.
+	startDefaultsBodyLimit = 256 << 10
 )
 
 // The task roles a rule can name.
@@ -109,27 +114,42 @@ type StartDefaultsRule struct {
 }
 
 // UnmarshalJSON accepts when and applies_when (StartDefaultsRule) with strict field checking of its own: the
-// decoder's DisallowUnknownFields does not reach inside a custom unmarshaler.
+// decoder's DisallowUnknownFields does not reach inside a custom unmarshaler. Presence is read from the raw bytes,
+// so an explicit null counts as present and cannot slip past the conflict check the way a decoded nil pointer would.
 func (r *StartDefaultsRule) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		When        *StartDefaultsMatch `json:"when"`
-		AppliesWhen *StartDefaultsMatch `json:"applies_when"`
-		Then        StartDefaultsThen   `json:"then"`
+		When        json.RawMessage   `json:"when"`
+		AppliesWhen json.RawMessage   `json:"applies_when"`
+		Then        StartDefaultsThen `json:"then"`
 	}
 	if err := strictJSON(data, &raw); err != nil {
 		return err
 	}
-	if raw.When != nil && raw.AppliesWhen != nil && !reflect.DeepEqual(*raw.When, *raw.AppliesWhen) {
-		// Both names are normal: the GET answer and a stored policy carry both, and they must read back unchanged.
-		// Only genuinely different matches under the two names are a conflict a writer has to resolve.
-		return errors.New("when and applies_when disagree; name one match")
-	}
 	*r = StartDefaultsRule{Then: raw.Then}
-	switch {
-	case raw.AppliesWhen != nil:
-		r.When = *raw.AppliesWhen // the current name wins on presence when both carry the same match
-	case raw.When != nil:
-		r.When = *raw.When
+	switch hasWhen, hasApplies := len(raw.When) > 0, len(raw.AppliesWhen) > 0; {
+	case hasWhen && hasApplies:
+		// Both names are normal: the GET answer and a stored policy carry both, and they must read back unchanged.
+		// An explicit null under either name still reaches this branch, so a null beside a real match is refused
+		// rather than silently treated as the other name.
+		var w, aw StartDefaultsMatch
+		if err := strictJSON(raw.When, &w); err != nil {
+			return err
+		}
+		if err := strictJSON(raw.AppliesWhen, &aw); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(w, aw) {
+			return errors.New("when and applies_when disagree; name one match")
+		}
+		r.When = aw
+	case hasApplies:
+		if err := strictJSON(raw.AppliesWhen, &r.When); err != nil {
+			return err
+		}
+	case hasWhen:
+		if err := strictJSON(raw.When, &r.When); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -162,27 +182,42 @@ type StartDefaultsThen struct {
 	PlanFirst bool                  `json:"plan_first,omitempty"`
 }
 
-// UnmarshalJSON accepts presets and candidates (StartDefaultsThen), strictly, and refuses a body naming both.
+// UnmarshalJSON accepts presets and candidates (StartDefaultsThen), strictly, and refuses a body naming both with
+// different lists. Presence is read from the raw bytes (StartDefaultsRule), so an explicit null cannot bypass it.
 func (t *StartDefaultsThen) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Presets    []StartDefaultsPreset `json:"presets"`
-		Candidates []StartDefaultsPreset `json:"candidates"`
-		Effort     string                `json:"effort,omitempty"`
-		Ultracode  *bool                 `json:"ultracode,omitempty"`
-		Goal       string                `json:"goal,omitempty"`
-		PlanFirst  bool                  `json:"plan_first,omitempty"`
+		Presets    json.RawMessage `json:"presets"`
+		Candidates json.RawMessage `json:"candidates"`
+		Effort     string          `json:"effort,omitempty"`
+		Ultracode  *bool           `json:"ultracode,omitempty"`
+		Goal       string          `json:"goal,omitempty"`
+		PlanFirst  bool            `json:"plan_first,omitempty"`
 	}
 	if err := strictJSON(data, &raw); err != nil {
 		return err
 	}
-	if raw.Presets != nil && raw.Candidates != nil && !reflect.DeepEqual(raw.Presets, raw.Candidates) {
-		// Same contract as when / applies_when: the answer carries both names and reads back; differing lists refuse.
-		return errors.New("presets and candidates disagree; name one candidate list")
-	}
 	*t = StartDefaultsThen{Effort: raw.Effort, Ultracode: raw.Ultracode, Goal: raw.Goal, PlanFirst: raw.PlanFirst}
-	t.Presets = raw.Candidates
-	if t.Presets == nil {
-		t.Presets = raw.Presets
+	switch hasPresets, hasCandidates := len(raw.Presets) > 0, len(raw.Candidates) > 0; {
+	case hasPresets && hasCandidates:
+		var p, c []StartDefaultsPreset
+		if err := strictJSON(raw.Presets, &p); err != nil {
+			return err
+		}
+		if err := strictJSON(raw.Candidates, &c); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(p, c) {
+			return errors.New("presets and candidates disagree; name one candidate list")
+		}
+		t.Presets = c
+	case hasCandidates:
+		if err := strictJSON(raw.Candidates, &t.Presets); err != nil {
+			return err
+		}
+	case hasPresets:
+		if err := strictJSON(raw.Presets, &t.Presets); err != nil {
+			return err
+		}
 	}
 	return nil
 }

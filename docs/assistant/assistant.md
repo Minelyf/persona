@@ -2237,7 +2237,20 @@ actually runs with. The owner and an extension granted the `assistant.start_defa
 extension-written policy must expire within one hour, so a stopped or uninstalled extension leaves nothing in force. A
 rule must set something; a rule whose `then` names nothing is refused.
 `GET /api/v1/assistant/worker-presets?machine=<id>` (same scope) lists the presets a computer can start. The wire shape
-is in `docs/protocol/protocol.md` ("Start defaults").
+is in `docs/protocol/protocol.md` ("Start defaults"). On the wire the rule's match is `applies_when` and its preset
+list `then.candidates`, each candidate `{"name","priority"?,"weight"?}`; the pre-convergence names `when` and
+`presets` are still accepted on every decode (stored policies included), reads answer both names with the same values,
+and a body whose two names disagree is refused (#11719).
+`POST /api/v1/assistant/start-defaults/preview` (same scope, read-only) answers what a policy would do for a task
+without doing any of it: the rule that fits, the winning priority group's usable candidates and the passed-over
+reasons, the extras, and which of them the caller's own values win. It runs the same matching and selection as a real
+start and writes nothing — a draft policy in the body is only validated, never stored.
+
+- **Candidate source** (`internal/assistant/start_candidates.go`): selection reads one small interface,
+  `startCandidateSource`, which answers each preset's availability and reason on a machine. The built-in source reads
+  the active model profile with the machine's launcher list and health, the same data `GET worker-presets` serves, so
+  a preview and a start cannot disagree. A dynamic candidates source implements that interface and is set on the
+  Service at construction; rule matching, priority/weight selection and the per-try retry reset do not change.
 
 - **Matching**, first rule that fits wins (the goal alone is decided apart, below): `supervisor` names the class of the
   conversation that follows the task up, with the dispatch policy's classes (`main`, `leader`, `background_supervisor`,
@@ -2245,10 +2258,13 @@ is in `docs/protocol/protocol.md` ("Start defaults").
   and a task no conversation follows up matches only a rule naming no class), `role` is `worker` or `leader`, `readonly`
   matches read-only or writable tasks.
 - **Applied at the task's start** (`startTaskAgent`, after the launcher fit), so retries, remedies, queued starts and
-  `task_spawn` children get the same: the first preset whose launcher the computer has and that is not at its usage
-  limit (weights share starts among the usable ones; a preset passed over is named in the task's why); then the effort,
-  ultracode on Claude Code only, and the goal on Claude Code and Codex. A caller's own effort, ultracode choice, tier,
-  model or launcher is never replaced, and an effort the caller's tier gives wins over the policy's.
+  `task_spawn` children get the same: the highest-priority candidate group with anything usable wins, within it the
+  first preset whose launcher the computer has and that is not at its usage limit (weights share starts inside that
+  group, rolled from `crypto/rand`; an omitted priority is 0, so a list without priorities behaves exactly as the old
+  ordered list did, and a group that cannot run falls through to the next); a preset passed over is named in the
+  task's why. Then the effort, ultracode on Claude Code only, and the goal on Claude Code and Codex. A caller's own
+  effort, ultracode choice, tier, model or launcher is never replaced, and an effort the caller's tier gives wins over
+  the policy's.
 - **The goal** is the task's `done_when` as one checkable sentence (`prompts/assistant/task_goal.md`), set by the node
   after the first message is in the transcript, as Claude Code's `/goal` or Codex's own `/goal`
   ([agent-goal.md](../integrations/agent-goal.md), "A goal set at the start"). A computer whose node cannot set it

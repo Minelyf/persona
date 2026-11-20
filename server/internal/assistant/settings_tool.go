@@ -264,8 +264,8 @@ func (s *Service) ownSettings() []ownSetting {
 			About: "compatibility only, whether off (the default) or on: the main conversation supervises every new task no leader " +
 				"supervises and receives its supervision messages. The main conversation still hears of failed starts with no current " +
 				"leader and of what an already configured background conversation hands to the user; that background only finishes its " +
-				"previously assigned supervision notices, and none is created or selected for new work. Changing the setting does not move " +
-				"existing notices or stop tasks",
+				"previously assigned supervision notices, and no background conversation is created or selected for new work. Changing " +
+				"the setting does not move existing notices or stop tasks",
 			Value: "true or false"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.mainSupervisesOwnTasks(ctx)), nil },
 			set: s.setMainSupervisesOwnTasks},

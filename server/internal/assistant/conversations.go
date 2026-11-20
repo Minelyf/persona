@@ -757,8 +757,8 @@ func (s *Service) queueRelay(to string, msg relayMsg) int {
 }
 
 // queueRelayDurable is the supervision delivery boundary. Unlike best-effort conversation relays, a supervision
-// signal is accepted only after its queued message is saved. A failed write rolls the in-memory append back so the
-// durable failed-start outbox and the ordinary pending scheduler can retry the same generation.
+// signal is accepted only after its queued message and outbox acknowledgment are saved together. A failed write rolls
+// both in-memory forms back so the durable failed-start outbox and ordinary pending scheduler retry the same generation.
 func (s *Service) queueRelayDurable(to string, msg relayMsg) (int, error) {
 	b := &s.relays
 	b.mu.Lock()
@@ -766,12 +766,26 @@ func (s *Service) queueRelayDurable(to string, msg relayMsg) (int, error) {
 		b.mu.Unlock()
 		return 0, errors.New("the relay queue cannot be read")
 	}
+	if msg.Tool == superviseTool && msg.DoubtedAt.IsZero() {
+		msg.DoubtedAt = b.doubted[relayMsgID(to, msg)] // a direct send became doubtful before it was queued
+	}
 	previous := b.st.Queue
+	previousPending := maps.Clone(b.st.SupervisePending)
 	b.st.Queue = maps.Clone(previous)
 	msg.QueuedAt, msg.Depth = time.Now().UTC(), len(previous[to])+1
 	b.st.Queue[to] = append(slices.Clone(previous[to]), msg)
+	if msg.Tool == superviseTool {
+		if signals, structured := decodeDigestSignals(msg.Signals); structured {
+			// Queue admission and outbox acknowledgment share this one durable write (#5732).
+			ackSupervisePendingLocked(b.st.SupervisePending, signals)
+			if len(b.st.SupervisePending) == 0 {
+				b.st.SupervisePending = nil
+			}
+		}
+	}
 	if err := s.saveRelayLocked(); err != nil {
 		b.st.Queue = previous
+		b.st.SupervisePending = previousPending
 		b.mu.Unlock()
 		return 0, err
 	}

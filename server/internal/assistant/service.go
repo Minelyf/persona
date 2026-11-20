@@ -25,6 +25,7 @@ import (
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/remoteimage"
 	"github.com/nwverse/persona/server/internal/secretkey"
+	"github.com/nwverse/persona/server/internal/taskworkspace"
 )
 
 // Options are what a Service runs with.
@@ -146,8 +147,9 @@ type Service struct {
 
 	// prepared is what this hub last gave a machine's node for a directory (key: machine id NUL directory), the
 	// CLAUDE.md and the plugin skills, by prepareSpaceIf; refreshInstructions gives again what differs.
-	preparedMu sync.Mutex
-	prepared   map[string]preparedState
+	prepareLocks cardLocks
+	preparedMu   sync.Mutex
+	prepared     map[string]preparedState
 
 	epoch string
 	// born is when this manager started: a background supervisor started before it may be in a profile with no login
@@ -600,6 +602,11 @@ func (s *Service) call(ctx context.Context, device, method string, params, out a
 		return beforeNodeWrite(method, err)
 	}
 	p := DeviceCall{Device: device, Method: method, Params: raw}
+	if fields, ok := params.(map[string]any); ok && method == DeviceSessionStart {
+		if _, managed := fields["backend_workspace"].(taskworkspace.Request); managed {
+			p.Method = devicewire.MethodStartBackendSession
+		}
+	}
 	res, ok, err := s.localFleetDeviceCall(ctx, p) // what the hub answered before the nodes' events were the manager's
 	if !ok {
 		res, err = s.hub.DeviceCall(ctx, p)

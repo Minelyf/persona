@@ -19,6 +19,7 @@ import (
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
+	"github.com/nwverse/persona/server/internal/taskworkspace"
 	"github.com/nwverse/persona/server/internal/transcript"
 )
 
@@ -678,7 +679,8 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentStartTimeout)
 		defer cancel()
 		// The tab is named from the prompt as written; the agent gets its project's background before it (#2820).
-		params := map[string]any{"cwd": a.Cwd, "launcher": a.Launcher, "model": a.Model, "effort": a.Effort, "speed": a.Speed, "tab_name": s.tabName(sctx, a.Prompt)}
+		title := s.tabName(sctx, a.Prompt)
+		params := map[string]any{"cwd": a.Cwd, "launcher": a.Launcher, "model": a.Model, "effort": a.Effort, "speed": a.Speed, "tab_name": title, "title": title}
 		prompt := s.withCloseoutBrief(sctx, a.Prompt, false)
 		params["prompt"] = s.withProjectContext(sctx, am.ID, a.Cwd, self, prompt)
 		if a.Ultracode {
@@ -828,6 +830,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			}
 			return "", err
 		}
+		s.nameStartedAgent(sctx, am.ID, res.Session, title)
 		s.recordStartSuccess(ctx, am.ID, ranLauncher(launcher, res.Instead, res.Session))
 		if said := s.startInsteadNote(ctx, am, res.Instead, res.Session); said != "" {
 			note += " Note: " + said + "." // the engine ran another of the same kind, its default model, a lower effort (#8140)
@@ -866,6 +869,9 @@ var agentStartAdoptRetry = 200 * time.Millisecond
 // missing one or a request the node refused is definite and stays an error; rpc.ErrDropped answers the same words
 // as rpc.ErrClosed (a relay passes them through), so the rpc.Error message form counts too.
 func startResultUnknown(err error) bool {
+	if p, ok := errors.AsType[*taskworkspace.Problem](err); ok {
+		return p.Code == "operation_unknown"
+	}
 	var re *rpc.Error
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
 		errors.Is(err, rpc.ErrClosed) || errors.As(err, &re) && re.Message == rpc.ErrClosed.Error()

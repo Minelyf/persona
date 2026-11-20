@@ -24,7 +24,8 @@ var startPrimitives = []string{"startOn", "start", "startConversationOn", "start
 
 // startWrappers pass a start on: their callers are the entry points.
 var startWrappers = map[string]string{
-	"startTaskAgent": "a planned task's agent start (tasks_placement.go), called by runPlanTaskStart",
+	"startTaskAgent":   "a planned task's agent start (tasks_placement.go), called by runPlanTaskStart",
+	"startBackendTask": "a planned task's prepared-backend start (tasks_backend_launch.go), called by startTaskAgent",
 }
 
 // supervisedStarts are the entry points that give their work a ledger, and the function that does it: it must call
@@ -46,6 +47,7 @@ var supervisedStarts = map[string]string{
 // startOptOuts are the start paths that stay unsupervised on purpose, with why. Each is the user's own conversation or
 // Agent, the supervisor itself, or work some other part of the hub already follows.
 var startOptOuts = map[string]string{
+	"call":                 "the generic device RPC transport: the concrete session.start caller, not this transport, owns the ledger",
 	"botSendIn":            "a Lark message opening a conversation: the user's own conversation",
 	"channelForward":       "a channel's message opening a conversation: the user's own conversation",
 	"request":              "the hub bus's assistant.start: an app opening a conversation for the user",

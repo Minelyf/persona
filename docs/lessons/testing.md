@@ -77,6 +77,12 @@
   the same derived data and suite selection; preserve failure propagation, integration exclusions and result-bundle
   inspection rather than increasing the execution timeout or dropping suites.
 
+- App-hosted simulator launch failures are not necessarily boot or product-test failures (#1738). A completed boot,
+  testmanagerd control connection and app installation can all precede a Mach -308 launch timeout without a test-bundle
+  proxy connection. Capture the host process and launchd/runtime-mount evidence before Xcode timeout cleanup, and keep
+  the app host distinct from the test bundle. Requiring both UDID and bundle ID misses launchd errors; filtering a large
+  raw log only after buffering it also discards the evidence. Neither an absent log nor a process presence proves a cause.
+
 - Sync replay must wait for its initial session, built transcript and pending-card snapshot before issuing user actions
   (#1112). Fixed startup sleeps can turn a tap on an unloaded card into a silent no-op; accepting a reply with no held
   request then falsely labels the later card snapshot as a resurrection. Require an actual request before delivering

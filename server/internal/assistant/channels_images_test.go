@@ -223,3 +223,57 @@ func TestChannelImageOnlyFetchesWebAddresses(t *testing.T) {
 		t.Fatalf("fetched %v", f)
 	}
 }
+
+// When no picture of an answer can be sent, each is still named by its address in its place: the Markdown image
+// would show as code on a plain channel. With no fetcher at all it is the same (#11986, review of #12158).
+func TestChannelAnswerNamesEveryPictureWhenNoneIsSent(t *testing.T) {
+	answer := "看图\n\n![坏的](https://pics.example/missing.png)\n\n完"
+	lang := i18n.Lang("zh-Hans")
+	link := i18n.T(lang, "assistant-channels_plugin.image_link", i18n.Args{"alt": i18n.Verbatim("坏的"), "url": i18n.Verbatim("https://pics.example/missing.png")})
+	s, sends, _ := picturesRig(t, true)
+	s2, sends2, _ := picturesRig(t, true)
+	s2.channelPicture, s2.remoteImages = nil, nil
+	for i, svc := range []*Service{s, s2} {
+		if err := svc.channelSend(context.Background(), "examplechat", "run-1", answer, channel.OutAnswer, ""); err != nil {
+			t.Fatal(err)
+		}
+		got := [][]map[string]any{sends(), sends2()}[i]
+		if len(got) != 1 || got[0]["images"] != nil || got[0]["text"] != "看图\n\n"+link+"\n\n完" {
+			t.Fatalf("rig %d sent %v", i, got)
+		}
+	}
+}
+
+// Pictures in an indented code block (four spaces or a tab) stay text and are never fetched; a picture indented up to
+// three spaces is still a block image (#11986, review of #12158).
+func TestChannelAnswerLeavesIndentedCodeAlone(t *testing.T) {
+	s, sends, fetched := picturesRig(t, true)
+	answer := strings.Join([]string{
+		"这样写：",
+		"",
+		"    ![示意](https://pics.example/code.png)",
+		"",
+		"\t![制表符](https://pics.example/tab.png)",
+		"",
+		"   ![图](https://pics.example/chart.png)",
+	}, "\n")
+	if err := s.channelSend(context.Background(), "examplechat", "run-1", answer, channel.OutAnswer, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := sends()
+	if len(got) != 1 || len(images(t, got[0])) != 1 {
+		t.Fatalf("sent %v", got)
+	}
+	text := got[0]["text"].(string)
+	for _, want := range []string{"    ![示意](https://pics.example/code.png)", "\t![制表符](https://pics.example/tab.png)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lost %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "chart.png") {
+		t.Errorf("text:\n%s", text)
+	}
+	if f := fetched(); len(f) != 1 || !strings.Contains(f[0], "chart.png") {
+		t.Errorf("fetched %v", f)
+	}
+}

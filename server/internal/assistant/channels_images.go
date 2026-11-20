@@ -14,8 +14,8 @@ import (
 // on a line of its own (the block images the apps draw, docs/assistant/assistant.md "Pictures in replies (#9473)") is
 // taken out of the text and sent as a picture of the chat app. It is fetched as the apps' pictures are, through
 // remoteimage (the open internet only, checked and scaled), so a channel never makes the manager fetch what the
-// apps would not. Inline pictures, pictures in code and ones past ImagesMost stay in the text; a picture that can't
-// be fetched becomes a line naming it with its address, so it is not lost.
+// apps would not. Inline pictures and pictures in code (fenced or indented) stay in the text; one past ImagesMost or
+// one that can't be fetched becomes a line naming it with its address, so it is not lost.
 
 // channelImageSides are the long sides a picture a channel sends is drawn at, the first whose picture fits ImageMost:
 // as large as a remote image gets, then smaller (each drawn from the source remoteimage keeps).
@@ -34,20 +34,31 @@ func (s *Service) channelImages(ctx context.Context, id, text string) (string, [
 	lines := strings.Split(text, "\n")
 	gone := make([]bool, len(lines)) // lines that were nothing but pictures, all sent
 	var blobs []channel.Blob
+	changed := false
 	fence := ""
+	// para: the line before was a paragraph's, which an indented line continues; code: in an indented code block.
+	para, code := false, false
 	lang := s.lang(ctx)
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if mark := fenceOf(trimmed); mark != "" {
-			switch {
-			case fence == "":
-				fence = mark
-			case strings.HasPrefix(trimmed, fence) && strings.TrimLeft(trimmed, fence[:1]) == "":
+		indent := indentOf(line)
+		if fence != "" {
+			if indent < 4 && strings.HasPrefix(trimmed, fence) && strings.TrimLeft(trimmed, fence[:1]) == "" {
 				fence = ""
 			}
 			continue
 		}
-		if fence != "" {
+		if trimmed == "" {
+			para = false // a blank line ends a paragraph, not an indented code block
+			continue
+		}
+		if indent >= 4 && (!para || code) { // CommonMark indented code: its pictures stay text
+			code = true
+			continue
+		}
+		code, para = false, true
+		if mark := fenceOf(trimmed); mark != "" && indent < 4 {
+			fence, para = mark, false
 			continue
 		}
 		pics, ok := blockImages(trimmed)
@@ -67,12 +78,30 @@ func (s *Service) channelImages(ctx context.Context, id, text string) (string, [
 			}
 			blobs = append(blobs, blob)
 		}
-		lines[i], gone[i] = strings.Join(kept, "\n"), len(kept) == 0
+		lines[i], gone[i], changed = strings.Join(kept, "\n"), len(kept) == 0, true
 	}
-	if len(blobs) == 0 {
+	if !changed {
 		return text, nil
 	}
+	// Even when no picture could be sent, each is named by its line: the text keeps no Markdown image a plain
+	// channel would show as code.
 	return withoutLines(lines, gone), blobs
+}
+
+// indentOf is how far line is indented, a tab counting to the next multiple of four columns.
+func indentOf(line string) int {
+	n := 0
+	for _, c := range line {
+		switch c {
+		case ' ':
+			n++
+		case '\t':
+			n += 4 - n%4
+		default:
+			return n
+		}
+	}
+	return n
 }
 
 // channelImage is the picture at address as a channel sends it: JPEG or PNG, at most ImageMost. ok is false for an

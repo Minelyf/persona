@@ -499,17 +499,22 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // en 479,515 B to 479,787 B, zh-Hans 480,246 B to 480,518 B): Conversation tasks in ⋯ on a phone and the chat's pills'
 // touch targets, with the Loading earlier row drawn over the top padding (views/chat/ChatView.tsx), and the Agents
 // page's scroll kept on Back with its title row's and By to-do rows' touch boxes (views/Sidebar.tsx,
-// views/SidebarTree.tsx). Main had 157 B of room, so the budget is this ja size plus those 157 B.
+// views/SidebarTree.tsx). Main had 157 B of room, so the budget is this ja size plus those 157 B (482,798 B).
 // #10822: Colored sidebar icons, an Appearance choice off by default: the choice's store and the built-in pages' colors
 // (lib/sidebar-icons.ts), read where the sidebar draws its pages, and the style a colored icon takes. 172 B in each
 // language, measured in one environment against main 8df9e781b0 (ja 482,711 B to 482,883 B; en 479,826 B to 479,998 B,
-// zh-Hans 480,595 B to 480,767 B); the setting's row and words load with Settings. The budget is main's plus those
-// 172 B.
+// zh-Hans 480,595 B to 480,767 B); the setting's row and words load with Settings. The budget is main's 482,798 B
+// ceiling plus those 172 B.
+// #11838: the sidebar's To-dos badge reads the To-dos page's own inputs through one hook the page shares
+// (lib/todo-owner-needs.ts: the to-dos' Agents with the list's task rows and cards answered here, and one minute
+// clock), and ownerNeeds keeps why each to-do counts. 88 B in each language, measured in one environment against main
+// 136308faf5 (ja 482,906 B to 482,994 B; en 479,979 B to 480,067 B, zh-Hans 480,757 B to 480,845 B); the rows' mark
+// and its words load with the To-dos page. The budget is main's 482,970 B ceiling plus those 88 B.
 // #11825: A prepaid balance row in the sidebar's usage strip (views/UsageBars.tsx, lib/usage-windows.ts): the provider's
-// amount and currency for an official DeepSeek launcher, with no bar; the popover's longer words load with it. 202 B in
-// ja, measured in one environment against main 98e5b70758 (ja 482,886 B to 483,088 B; en 479,974 B to 480,176 B,
-// zh-Hans 480,730 B to 480,932 B). The budget is main's plus those 202 B.
-export const FIRST_SCREEN_BUDGET = 483_088;
+// amount and currency for an official DeepSeek launcher, with no bar; the popover's longer words load with it. 242 B in
+// ja, measured in one environment against main c4459e56f3 (ja 482,994 B to 483,236 B; en 480,067 B to 480,326 B,
+// zh-Hans 480,845 B to 481,080 B). The budget is main's 483,058 B ceiling plus those 242 B.
+export const FIRST_SCREEN_BUDGET = 483_300;
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
 const NAME_HASH = /-([A-Za-z0-9_-]{8})\.[^./]+$/;

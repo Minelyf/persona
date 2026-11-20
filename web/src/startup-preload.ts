@@ -505,7 +505,11 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // language, measured in one environment against main 8df9e781b0 (ja 482,711 B to 482,883 B; en 479,826 B to 479,998 B,
 // zh-Hans 480,595 B to 480,767 B); the setting's row and words load with Settings. The budget is main's plus those
 // 172 B.
-export const FIRST_SCREEN_BUDGET = 482_970;
+// #11825: A prepaid balance row in the sidebar's usage strip (views/UsageBars.tsx, lib/usage-windows.ts): the provider's
+// amount and currency for an official DeepSeek launcher, with no bar; the popover's longer words load with it. 202 B in
+// ja, measured in one environment against main 98e5b70758 (ja 482,886 B to 483,088 B; en 479,974 B to 480,176 B,
+// zh-Hans 480,730 B to 480,932 B). The budget is main's plus those 202 B.
+export const FIRST_SCREEN_BUDGET = 483_088;
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
 const NAME_HASH = /-([A-Za-z0-9_-]{8})\.[^./]+$/;

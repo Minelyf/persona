@@ -8,15 +8,28 @@ import { heldDelivery, isCancelled, openAsk, todoDueBy, todoStatus, waitsForOwne
 /** Where a to-do shows: merge waits join explicit holds on the web (#9325); cancelled stays apart from Done (#5732). */
 export type TriageSection = "waiting" | "working" | "parked" | "just_done" | "other" | "shelved" | "done" | "cancelled";
 
-/** The page's order (#5707): unfinished work stays open; cancelled folds separately after Done (#5732). */
+/** The page's order (#5707): unfinished work stays open; cancelled has its own section after Done (#5732). */
 export const TRIAGE_SECTIONS: readonly TriageSection[] = ["waiting", "working", "parked", "other", "just_done", "shelved", "done", "cancelled"];
 
-/** Sections that start folded: unfinished to-dos stay open (#5707); cancelled folds apart from Done (#5732). */
+/** Sections that start folded by default: unfinished to-dos stay open (#5707); cancelled folds apart from Done (#5732). */
 export const FOLDED_SECTIONS: ReadonlySet<TriageSection> = new Set(TRIAGE_SECTIONS.slice(-3));
 
 /** No activity for this long, nothing of it running: shelved (SOP rule 11). */
 export const SHELVE_AFTER_MS = 48 * 3600_000;
 export const JUST_DONE_MS = 24 * 3600_000;
+
+/** A fresh accepted, owner-ticked or cancelled outcome remains observable in its own section; older history and plain
+ *  legacy review-done groups keep the folded default (#11677, #3713). Shelved always starts folded. */
+export function sectionStartsFolded(section: TriageSection, groups: readonly { last: number; lead: Pick<Todo, "done_by" | "supervision"> }[], now: number): boolean {
+  if (!FOLDED_SECTIONS.has(section)) return false;
+  if (section !== "done" && section !== "cancelled") return true;
+  return !groups.some((group) => {
+    if (group.last > now || now - group.last >= JUST_DONE_MS) return false;
+    const outcome = group.lead.supervision?.state;
+    return (group.lead.done_by !== "review" && group.lead.done_by !== "auto") || outcome === "accepted" || outcome === "cancelled";
+  });
+}
+
 export const PR_STATUS_FRESH_MS = 15 * 60_000;
 
 export function normalizedPR(url: string | undefined): string {

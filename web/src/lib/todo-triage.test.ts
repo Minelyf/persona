@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Interaction, Session } from "./types";
 import { acceptedAtRest, makeSessionLookup, shownStatus, todoRank, todoStatus, todoStatusLabel, type Todo } from "./todos";
 import { checkCount, checklist, decisionDismissed, reviewBadge, type Supervision } from "./supervision";
-import { finishedAt, FOLDED_SECTIONS, lastActivity, relatedKeys, SHELVE_AFTER_MS, supersededFailedStarts, todoBucket, TRIAGE_SECTIONS, triage, triageTodos, waitingForMerge } from "./todo-triage";
+import { finishedAt, FOLDED_SECTIONS, lastActivity, relatedKeys, sectionStartsFolded, SHELVE_AFTER_MS, supersededFailedStarts, todoBucket, TRIAGE_SECTIONS, triage, triageTodos, waitingForMerge } from "./todo-triage";
 import { seenCanFile } from "./todo-details";
 import { resetRestoredCache, restoreTodo } from "./todo-restore";
 
@@ -346,6 +346,13 @@ describe("triageTodos", () => {
   it("lists the unfinished sections open above Just finished, Shelved and Done folded with Done last (#5707)", () => {
     expect(TRIAGE_SECTIONS).toEqual(["waiting", "working", "parked", "other", "just_done", "shelved", "done", "cancelled"]);
     expect([...FOLDED_SECTIONS]).toEqual(["shelved", "done", "cancelled"]);
+    expect(sectionStartsFolded("done", [{ last: NOW - 3600_000, lead: {} }], NOW)).toBe(false);
+    expect(sectionStartsFolded("done", [{ last: NOW - 25 * 3600_000, lead: {} }], NOW)).toBe(true);
+    expect(sectionStartsFolded("done", [{ last: NOW - 3600_000, lead: { done_by: "review" } }], NOW)).toBe(true);
+    expect(sectionStartsFolded("done", [{ last: NOW - 3600_000, lead: { done_by: "review", supervision: { supervisor: "conv", state: "accepted" } } }], NOW)).toBe(false);
+    expect(sectionStartsFolded("cancelled", [{ last: NOW - 3600_000, lead: { done_by: "cancelled" } }], NOW)).toBe(false);
+    expect(sectionStartsFolded("cancelled", [{ last: NOW - 25 * 3600_000, lead: { done_by: "cancelled" } }], NOW)).toBe(true);
+    expect(sectionStartsFolded("shelved", [{ last: NOW - 3600_000, lead: {} }], NOW)).toBe(true);
   });
 
   it("unfinished to-dos lead a row and come before Just finished; seen ones are Done", () => {

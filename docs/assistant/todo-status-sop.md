@@ -34,8 +34,12 @@ then the folded ones, Done and Cancelled last. The same order decides which memb
 | Other open | open | Open, recently active, none of the above (an agent stopped and seen, a reminder of the user's own) |
 | Delivered · awaiting review | open | Worth a look: an unaccepted delivery, unseen turn, pending review or done / please-verify ask, or a closed concern whose completion is less than 24 hours old and unseen. An unaccepted `live` delivery stays here and open indefinitely, even after being seen; it never ages into Done or Shelved |
 | Inactive (web; Shelved on native clients) | folded | No activity for 48 hours and nothing running (see "Shelving"); not an explicit parked verdict |
-| Done | folded | Non-cancelled closed (apart from that fresh unseen closed concern), accepted or superseded work immediately; an ordinary unsupervised finished turn seen since it last moved. Unaccepted `live` work never enters this section merely through age or Seen |
-| Cancelled | folded | Cancelled work, with its cancellation reason; never counted as Done |
+| Done | folded by default | Non-cancelled closed (apart from that fresh unseen closed concern), accepted or superseded work immediately; an ordinary unsupervised finished turn seen since it last moved. Unaccepted `live` work never enters this section merely through age or Seen |
+| Cancelled | folded by default | Cancelled work, with its cancellation reason; never counted as Done |
+
+In the status list, a Done group led by a fresh (less than 24 hours old) accepted or owner-ticked outcome, and a fresh
+Cancelled group, start open so the outcome and its title treatment remain visible (#11677). A plain legacy review-done
+group and older history stay folded (#3713). The separate Done and Cancelled folds in the other groupings do not change.
 
 ## Decision table
 

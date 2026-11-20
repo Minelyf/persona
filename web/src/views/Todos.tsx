@@ -81,7 +81,7 @@ import { groupTodosByProject, treeStateLabel, type TodoProjectGroup, type TreeSt
 import { cancellationReason, formatAgentSource, formatTodoContext } from "../lib/todo-details";
 import { directionTitle, groupsByDirection, useDirectionTree, type Direction } from "../lib/direction-tree";
 import { DirectionCountsText } from "./DirectionMarks";
-import { FOLDED_SECTIONS, TRIAGE_SECTIONS, checksAsOpen, countsAsOpen, lastActivity, openMergePRs, supersededFailedStarts, triage, triageTodos, type OwnerNeed, type TriageGroup, type TriageResult, type TriageRule, type TriageSection } from "../lib/todo-triage";
+import { FOLDED_SECTIONS, TRIAGE_SECTIONS, checksAsOpen, countsAsOpen, lastActivity, openMergePRs, sectionStartsFolded, supersededFailedStarts, triage, triageTodos, type OwnerNeed, type TriageGroup, type TriageResult, type TriageRule, type TriageSection } from "../lib/todo-triage";
 import { orderWaitGroups } from "../lib/task-wait";
 import { viewDrawOn } from "../features/todos/model/view-gates";
 import { drawnFromView, openAsDrawn } from "../features/todos/model/view-triage";
@@ -485,7 +485,7 @@ export function TodosView({
     if (requestMode || !split) return undefined;
     if (byStatus) {
       // the first row of an open section; none rather than one that would unfold a folded section (Shelved, Done)
-      for (const sec of TRIAGE_SECTIONS) if (!FOLDED_SECTIONS.has(sec) && triaged.sections[sec].length) return triaged.sections[sec][0].lead;
+      for (const sec of TRIAGE_SECTIONS) if (!sectionStartsFolded(sec, triaged.sections[sec], tick) && triaged.sections[sec].length) return triaged.sections[sec][0].lead;
       return undefined;
     }
     // by 常驻: the first row shown (a direction's, else an unfolded status section's below them), else history
@@ -881,8 +881,8 @@ export function TodosView({
                     <TodoTriageSection
                       key={sec}
                       section={sec}
-                      // unfinished to-dos start open, above Just finished; Shelved and Done start folded (#5707)
-                      folded={FOLDED_SECTIONS.has(sec)}
+                      // Fresh accepted, ticked and cancelled outcomes stay visible; older history keeps the folded default.
+                      folded={sectionStartsFolded(sec, triaged.sections[sec], tick)}
                       groups={sortTriageGroups(triaged.sections[sec], listSort)}
                       count={sectionSize(triaged, sec)}
                       views={views}

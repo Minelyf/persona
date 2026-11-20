@@ -510,11 +510,16 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // clock), and ownerNeeds keeps why each to-do counts. 88 B in each language, measured in one environment against main
 // 136308faf5 (ja 482,906 B to 482,994 B; en 479,979 B to 480,067 B, zh-Hans 480,757 B to 480,845 B); the rows' mark
 // and its words load with the To-dos page. The budget is main's 482,970 B ceiling plus those 88 B.
+// #11804 + #11820: Antigravity queue/send-now runtime copy and launcher-scoped Assistant sign-in guidance add
+// 85 B to the ja first screen (ja 483,143 B, en 480,233 B, zh-Hans 480,987 B). The budget is main's 483,058 B
+// ceiling plus those 85 B.
 // #11825: A prepaid balance row in the sidebar's usage strip (views/UsageBars.tsx, lib/usage-windows.ts): the provider's
 // amount and currency for an official DeepSeek launcher, with no bar; the popover's longer words load with it. 260 B in
 // ja, measured in one environment against main c4459e56f3 (ja 482,994 B to 483,254 B; en 480,067 B to 480,344 B,
-// zh-Hans 480,845 B to 481,098 B). The budget is main's 483,058 B ceiling plus those 260 B.
-export const FIRST_SCREEN_BUDGET = 483_318;
+// zh-Hans 480,845 B to 481,098 B), from a 483,058 B ceiling. Merged with #11804 + #11820 (main fc31360177), the two
+// changes share bytes: the row adds 25 B to that main's ja size, measured in one environment (ja 483,143 B to
+// 483,168 B; en 480,233 B to 480,258 B, zh-Hans 480,987 B to 481,012 B). The budget is the merged ja size.
+export const FIRST_SCREEN_BUDGET = 483_168;
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
 const NAME_HASH = /-([A-Za-z0-9_-]{8})\.[^./]+$/;

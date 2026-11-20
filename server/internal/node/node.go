@@ -224,6 +224,10 @@ type Node struct {
 	sysOnce    sync.Once      // system: read once (metrics.go)
 	sys        proto.System
 
+	// droppedResume: herdr servers (ServerID) found too old to keep a resume command, each warned about once
+	// (herdrresume.go warnDroppedResume).
+	droppedResume map[string]bool
+
 	// startsBegun: when the latest start of a session that starts does not hold began (transcript_files.go).
 	startsBegun startsBegun
 
@@ -291,6 +295,7 @@ type Node struct {
 	// codexAttached: such a row's id → the thread it became; codexWaitLooking: the look for their threads runs.
 	codexWaiting     map[string]*codexWait
 	codexAttached    map[string]codexAttach
+	codexManual      map[string]string // a manually attached thread, only while Codex still runs in its pane
 	codexWaitLooking bool
 	// codexAbandoned: failed starts whose pane could not be closed; a retry must close it before opening another.
 	codexAbandoned map[string][]codexAbandonedStart
@@ -881,6 +886,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		Turns                   int           `json:"turns"`
 		LazyImages              bool          `json:"lazy_images"`
 		UserInputs              bool          `json:"user_inputs"`
+		StrictRead              bool          `json:"strict_read"`
 		FoldWork                bool          `json:"fold_work"`
 		FromSeq                 int           `json:"from_seq"`
 		ThroughSeq              int           `json:"through_seq"`
@@ -923,7 +929,8 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		MessageSource    *proto.MessageSource          `json:"message_source"`
 		ClientMsgID      string                        `json:"client_msg_id"`
 		AtItemID         string                        `json:"at_item_id"`     // session.fork: the reply to branch off at
-		Refresh          bool                          `json:"refresh"`        // launchers.models: ask again, not the kept list
+		Refresh          bool                          `json:"refresh"`        // launchers.models/list: ask again, not the kept list
+		CacheOnly        bool                          `json:"cache_only"`     // launchers.list: read the last completed shell discovery without waiting
 		Purpose          string                        `json:"purpose"`        // launchers.models/check: assistant runs outside the Agent engine
 		AssistantTurn    bool                          `json:"assistant_turn"` // launchers.check: shaped as an assistant turn (launchercheck_assistant.go)
 		Conversation     string                        `json:"conversation"`   // launchers.check with assistant_turn: the conversation whose profile it runs in
@@ -1332,17 +1339,40 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 				return map[string]any{"launchers": typedLaunchers(ls), "host": p.Host, "host_runtime": true}, nil
 			}
 		}
-		ls, err := n.launchers(ctx)
+		forced := p.Refresh
+		cacheOnly := p.CacheOnly && !forced && p.Host == "" && p.Source == ""
+		var ls []proto.Launcher
+		var err error
+		if cacheOnly {
+			launcherCache.Lock()
+			ls = launcherCache.list
+			launcherCache.Unlock()
+		} else {
+			ls, err = n.launchers(ctx, forced)
+		}
 		bl := n.runtimes.launchers()
 		if len(bl) > 0 {
 			// Explicit shell launchers keep their names; a discovered CLI fallback yields to its connected runtime.
-			ls, err = n.runtimes.withShell(bl, ls), nil
+			// Ordinary pickers keep independently usable overlays when shell discovery fails. Forced recovery reads
+			// retain the error: a partial catalog is not fresh evidence that an alias disappeared.
+			ls = n.runtimes.withShell(bl, ls)
+			if !forced {
+				err = nil
+			}
 		}
-		if withDesktop, added := n.withDesktopLauncher(ls); added { // Claude's desktop app (claudedesktop_new.go)
-			ls, err = withDesktop, nil
-		}
-		if withApp, added := n.withCodexAppLauncher(ls); added { // the Codex App (codexapp_new.go)
-			ls, err = withApp, nil
+		if !cacheOnly { // Desktop executable discovery can run through the login shell.
+			if withDesktop, added := n.withDesktopLauncher(ls); added { // Claude's desktop app (claudedesktop_new.go)
+				ls = withDesktop
+				if !forced {
+					err = nil
+				}
+			}
+			if withApp, added := n.withCodexAppLauncher(ls); added { // the Codex App (codexapp_new.go)
+				ls = withApp
+				if !forced {
+					err = nil
+				}
+			}
 		}
 		shell, rcFile := launcherShell()
 		out := map[string]any{"launchers": typedLaunchers(ls), "shell": shell, "rc_file": rcFile}
@@ -1435,9 +1465,12 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			return nil, err
 		}
 		p.Speed = speed
+		rawPrompt := p.Prompt
+		echoImages := 0
 		var runtimeImages []proto.Image
 		if method == "session.start" && len(p.Images) > 0 &&
 			(p.ResumeSessionID == "" || p.AgentType != ompAgent && launcherAgentType(p.Launcher) != ompAgent) {
+			echoImages = len(p.Images)
 			startCtx := withStartHost(ctx, p.Host)
 			runtime, _ := n.startRuntimeIn(startCtx, p.Launcher)
 			if p.ResumeSessionID == "" && runtime != nil && runtime.id() == agyAgent && !n.usesAgyPane(startCtx, p.Launcher, p.AgentType) {
@@ -1467,7 +1500,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 				session, _ := out["session"].(*proto.Session)
 				if resultErr == nil && session != nil {
 					r := echoRecord{SessionID: session.SessionID, ClientMsgID: echoOpts.ClientMsgID,
-						Text: p.Prompt, Images: len(runtimeImages), SentAt: sentAt, AfterSeq: after.seq, In: after.in}
+						Text: rawPrompt, Images: echoImages, SentAt: sentAt, AfterSeq: after.seq, In: after.in}
 					if n.echoes.expect(r) {
 						n.notifyEcho(r)
 					}
@@ -1478,6 +1511,9 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			unlock := n.recovery.lock(p.ResumeSessionID)
 			defer unlock()
 			ctx = withOmpResumeSend(ctx, p.Images, p.ClientMsgID) // what a resumed omp is sent with the prompt (ompresume.go)
+			if p.AgentType == ompAgent || launcherAgentType(p.Launcher) == ompAgent {
+				echoImages = len(p.Images)
+			}
 		}
 		if p.ResumeAutomatic {
 			if err := n.supervisorResumeAllowed(p.ResumeSessionID, p.PermissionMode, p.Launcher); err != nil {
@@ -2157,27 +2193,49 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			ItemID string `json:"item_id"`
 		}
 		_ = json.Unmarshal(params, &a)
-		f, err := n.file(p.SessionID)
+		read := n.file
+		if p.StrictRead {
+			read = n.exportFile
+		}
+		f, err := read(p.SessionID)
 		if err != nil {
 			return nil, n.readErr(p.SessionID, err)
 		}
-		n.refresh(p.SessionID, f)
+		if p.StrictRead {
+			if err := n.refreshExport(p.SessionID, f); err != nil {
+				return nil, err
+			}
+		} else {
+			n.refresh(p.SessionID, f)
+		}
 		it, err := f.Full(a.ItemID)
 		if err != nil {
 			return nil, fmt.Errorf("session %s: %w", p.SessionID, err)
 		}
 		it.Image = nil // images come from session.image
-		return n.echoed(p.SessionID, f, []proto.Item{it})[0], nil
+		it = n.echoed(p.SessionID, f, []proto.Item{it})[0]
+		if p.StrictRead {
+			return struct {
+				proto.Item
+				StrictRead      bool `json:"strict_read"`
+				SourceTextBytes int  `json:"source_text_bytes"`
+			}{it, true, len(it.Text)}, nil
+		}
+		return it, nil
 	case "session.items":
-		f, err := n.file(p.SessionID)
+		read := n.file
+		if p.StrictRead {
+			read = n.exportFile
+		}
+		f, err := read(p.SessionID)
 		if err != nil {
-			if n.startingSession(p.SessionID) { // nothing written yet: an empty chat; else not_found with its reason
+			if !p.StrictRead && n.startingSession(p.SessionID) { // nothing written yet: an empty chat; else not_found with its reason
 				if p.UserInputs {
 					return proto.UserInputIndex{Inputs: []proto.UserInputPosition{}}, nil
 				}
 				return map[string]any{"items": []proto.Item{}, "has_more": false}, nil
 			}
-			if session, _, _ := strings.Cut(p.SessionID, subagentSep); p.BeforeSeq > 0 && !p.UserInputs && n.knownSession(session) {
+			if session, _, _ := strings.Cut(p.SessionID, subagentSep); p.BeforeSeq > 0 && !p.UserInputs && !p.StrictRead && n.knownSession(session) {
 				// An older page of a session the node knows (or of its subagent): the end of its history, as before
 				// #11388. Only the latest page says why there is none; released apps ask an older page again on an
 				// error (#11450).
@@ -2185,7 +2243,11 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			}
 			return nil, n.readErr(p.SessionID, err)
 		}
-		if err := n.refresh(p.SessionID, f); err != nil && p.UserInputs {
+		if p.StrictRead {
+			if err := n.refreshExport(p.SessionID, f); err != nil {
+				return nil, err
+			}
+		} else if err := n.refresh(p.SessionID, f); err != nil && p.UserInputs {
 			return nil, err
 		}
 		if p.UserInputs {
@@ -2228,7 +2290,11 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			return withSpan(map[string]any{"items": items(fold(page)), "has_more": more}, span, false), nil
 		}
 		page, more, span := f.Page(p.BeforeSeq, limit)
-		return withSpan(map[string]any{"items": items(fold(page)), "has_more": more}, span, false), nil
+		result := withSpan(map[string]any{"items": items(fold(page)), "has_more": more}, span, p.StrictRead)
+		if p.StrictRead {
+			result["strict_read"] = true
+		}
+		return result, nil
 	case "session.watch":
 		// The stream outlives this request: it follows the connection (rpc.ConnContext), not the reply.
 		return ok(n.watchFor(rpc.ConnContext(ctx), p.SessionID, p.SinceSeq))

@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -469,3 +470,150 @@ func TestStartDefaultsRoundTripStaysWithinBodyLimit(t *testing.T) {
 		t.Fatalf("the dual-name read could not be written back: %d %s", code, out[:200])
 	}
 }
+
+// The preview answers what a real start would do, not just what the policy literally says: an omitted role is a
+// worker (roleOf), the goal follows startGoalSource (nothing without criteria, Codex's default when no rule names
+// one, off turning even that off), and effort/ultracode reach Claude Code only. Candidate rows come from the same
+// injected source a start would read.
+func TestStartDefaultsPreviewMatchesRealStartSemantics(t *testing.T) {
+	s, _ := defaultsHub(t)
+	post := func(body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/start-defaults/preview", strings.NewReader(body))
+		req.Header.Set(RoleHeader, roleFull)
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview: %d %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+	// An omitted role is a worker: a worker-scoped rule matches a preview that never names a role.
+	out := post(`{"task":{"machine":"box"},"start_defaults":{"rules":[{"applies_when":{"role":"worker"},"then":{"effort":"max"}}]}}`)
+	if out["matched"] != true || out["effort"] != "max" {
+		t.Fatalf("an omitted role did not match the worker rule: %v", out)
+	}
+	// goal done_when with no criteria: a real start sets no goal, so the preview must not echo it.
+	out = post(`{"task":{"machine":"box","done_when":0},"start_defaults":{"rules":[{"applies_when":{},"then":{"goal":"done_when"}}]}}`)
+	if _, ok := out["goal"]; ok {
+		t.Fatalf("a goal was previewed with no acceptance criteria: %v", out)
+	}
+	// The same rule with criteria does set it.
+	out = post(`{"task":{"machine":"box","done_when":2},"start_defaults":{"rules":[{"applies_when":{},"then":{"goal":"done_when"}}]}}`)
+	if out["goal"] != "done_when" {
+		t.Fatalf("the goal was not previewed with criteria: %v", out)
+	}
+	// No fitting rule: a new Codex start takes the default goal, Claude Code takes none.
+	out = post(`{"agent":"codex","task":{"machine":"box","done_when":2}}`)
+	if out["goal_by_default"] != true {
+		t.Fatalf("the Codex default goal was not previewed: %v", out)
+	}
+	out = post(`{"task":{"machine":"box","done_when":2}}`)
+	if _, ok := out["goal_by_default"]; ok {
+		t.Fatalf("Claude Code should take no default goal: %v", out)
+	}
+	// goal off turns the Codex default off too.
+	out = post(`{"agent":"codex","task":{"machine":"box","done_when":2},"start_defaults":{"rules":[{"applies_when":{},"then":{"goal":"off"}}]}}`)
+	if _, ok := out["goal"]; ok {
+		t.Fatalf("goal off still previewed a goal: %v", out)
+	}
+	if _, ok := out["goal_by_default"]; ok {
+		t.Fatalf("goal off left the Codex default on: %v", out)
+	}
+	// Effort and ultracode reach Claude Code only: a Codex preview reports neither, though the policy names both.
+	out = post(`{"agent":"codex","task":{"machine":"box"},"start_defaults":{"rules":[{"applies_when":{},"then":{"effort":"max","ultracode":true}}]}}`)
+	if _, ok := out["effort"]; ok {
+		t.Fatalf("a Codex preview advertised effort: %v", out)
+	}
+	if _, ok := out["ultracode"]; ok {
+		t.Fatalf("a Codex preview advertised ultracode: %v", out)
+	}
+	// The preview reads the injected candidate source, the same one a start uses.
+	s.startCandidates = stubCandidateSource{rows: map[string]startCandidate{
+		"deep":  {Name: "deep", Launcher: "gateway", Available: false, Reason: "gateway is not available yet"},
+		"quick": {Name: "quick", Launcher: "gateway", Available: true},
+	}}
+	out = post(`{"task":{"machine":"box"},"start_defaults":{"rules":[{"applies_when":{},"then":{"candidates":[{"name":"deep"},{"name":"quick"}]}}]}}`)
+	usable, _ := out["usable"].([]any)
+	if len(usable) != 1 || usable[0].(map[string]any)["name"] != "quick" {
+		t.Fatalf("the preview did not use the injected candidate source: %v", out["usable"])
+	}
+	passed, _ := out["passed_over"].([]any)
+	if len(passed) != 1 || passed[0].(map[string]any)["name"] != "deep" {
+		t.Fatalf("the preview did not report the injected source's unavailable row: %v", out["passed_over"])
+	}
+}
+
+// The preview writes nothing anywhere in the assistant's settings, not just the policy field, and starts no Agent.
+func TestStartDefaultsPreviewLeavesAllSettingsUntouched(t *testing.T) {
+	s, f := defaultsHub(t)
+	ctx := context.Background()
+	setSettings(t, s, func(v *Settings) {
+		v.StartDefaults = &StartDefaultsPolicy{By: "owner", Rules: []StartDefaultsRule{{Then: StartDefaultsThen{Effort: "max"}}}}
+	})
+	before, err := json.Marshal(s.settings(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"task":{"machine":"box"}}`,
+		`{"task":{"machine":"box"},"start_defaults":{"rules":[{"applies_when":{},"then":{"candidates":[{"name":"deep"}],"effort":"low","ultracode":true}}]}}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/start-defaults/preview", strings.NewReader(body))
+		req.Header.Set(RoleHeader, roleFull)
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	after, _ := json.Marshal(s.settings(ctx))
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("the preview changed settings:\nbefore %s\nafter  %s", before, after)
+	}
+	if len(startsOf(f)) != 0 || s.taskStarting.Load() != 0 {
+		t.Fatalf("the preview started or claimed work: starts %v", startsOf(f))
+	}
+}
+
+// Accepting both aliases with equal values keeps their content: the stored rule still scopes to the role it named,
+// so a regression that dropped the match on a both-names write would be caught.
+func TestStartDefaultsAliasAgreementKeepsTheMatch(t *testing.T) {
+	s, _ := defaultsHub(t)
+	if code, got := putStartDefaults(t, s, roleFull, "",
+		`{"start_defaults":{"rules":[{"when":{"role":"worker"},"applies_when":{"role":"worker"},"then":{"effort":"max"}}]}}`); code != http.StatusOK {
+		t.Fatalf("both-names write: %d %s", code, got)
+	}
+	p := s.activeStartDefaults(context.Background())
+	if p == nil || len(p.Rules) != 1 || p.Rules[0].When.Role != "worker" {
+		t.Fatalf("the both-names write lost the match: %+v", p)
+	}
+	if startDefaultsMatch(p.Rules[0].When, StartFacts{Role: "leader"}) {
+		t.Fatal("the stored rule now matches leaders too")
+	}
+	if !startDefaultsMatch(p.Rules[0].When, StartFacts{Role: "worker"}) {
+		t.Fatal("the stored rule no longer matches workers")
+	}
+}
+
+// The production roll really draws from the trusted entropy source: point it at a failing reader and the roll must
+// surface that failure (the package's panic precedent), never fall back to a predictable value.
+func TestPresetIntNReadsTheTrustedEntropySource(t *testing.T) {
+	oldReader, oldRoll := presetEntropy, presetIntN
+	t.Cleanup(func() { presetEntropy, presetIntN = oldReader, oldRoll })
+	presetIntN = oldRoll // the production implementation, not another test's stub
+	presetEntropy = failingEntropy{}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a failing entropy source did not fail the roll: the value came from somewhere else")
+		}
+	}()
+	presetIntN(4)
+}
+
+// failingEntropy always fails, to prove the roll reads the entropy source.
+type failingEntropy struct{}
+
+func (failingEntropy) Read([]byte) (int, error) { return 0, errors.New("entropy unavailable") }

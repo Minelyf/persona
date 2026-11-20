@@ -208,20 +208,20 @@ shell helpers could send the Chinese placeholder `默认` instead. Every client 
 empty model: the launcher's own default applies, its existing localized Default presentation is used, and no placeholder
 is sent as a model pick. Explicit model IDs are unchanged in both directions.
 
-## Start defaults 字段收敛（#11719）
+## Start-defaults field convergence (#11719)
 
-`GET`/`PUT /api/v1/assistant/start-defaults` 与 `PUT /api/v1/assistant` 内嵌 `start_defaults` 的规则字段在 #11719 统一为新名；这是扩展-facing 的 JSON，且同一份结构也持久化在 Postgres 的 settings 里，所以双读必须同时覆盖在线请求与已存策略。
+The rule fields of `GET`/`PUT /api/v1/assistant/start-defaults` and of the nested `start_defaults` in `PUT /api/v1/assistant` converge on new names in #11719. This is extension-facing JSON, and the same structure is persisted in the Postgres settings, so dual-read must cover both live requests and already-stored policies.
 
-| 标识 | 旧名 | 新名 | 新 hub／manager 行为 |
+| Identifier | Old name | New name | New hub / manager behavior |
 | --- | --- | --- | --- |
-| 规则匹配 | `when` | `applies_when` | 解码双读（含已存策略）；编码双写同值；两键同时出现且值不同 → 400，值相同按新名读取（presence，不做 OR） |
-| 候选列表 | `then.presets` | `then.candidates` | 同上；行内新增 `priority`（省略为 0，全部省略时行为与旧的有序列表逐字节一致） |
-| 只读预览 | 无 | `POST /api/v1/assistant/start-defaults/preview` | 复用 `assistant.start_defaults` scope，不新增 scope；旧 hub 没有该路由，扩展调用得到 404/403，不得改写到其它端点重试 |
+| Rule match | `when` | `applies_when` | Dual-read on decode (stored policies included); dual-write the same value on encode; both keys present with different values is a 400, with equal values the current name is read (presence, never an OR). An explicit `null` is present on the wire, so `null` beside a real value is a disagreement, not an absent field. |
+| Candidate list | `then.presets` | `then.candidates` | Same as above; each row gains `priority` (omitted is 0, so a list with no priorities behaves byte-for-byte like the old ordered list). |
+| Read-only preview | none | `POST /api/v1/assistant/start-defaults/preview` | Reuses the `assistant.start_defaults` scope, no new scope. An older hub has no such route, so an extension call gets 404/403 and must not be rewritten to another endpoint and retried. |
 
-- 旧 hub／manager 遇到新名 `applies_when` / `candidates` 会按未知字段 400（`DisallowUnknownFields`），这不是新端可以规避的：**没有能力就是旧端**。写入方应先 `GET` 看回答里是否带 `applies_when` / `candidates`（带即为新端），再决定用哪套字段写；不要在同一次写请求里用两套字段做"试错重试"。
-- 新端回答里同时带两套字段，所以旧读者 GET 后再 PUT 不会把策略写成空规则；旧读者忽略不认识的 `priority`，其效果等于该候选优先级 0。
-- 语义不放宽：`assistant.start_defaults` 仍按名授予、扩展策略仍必须一小时内过期、未知字段仍是 400、preview 不写任何状态。别名不做静默合并；真正的值冲突必须让写入方显式解决。
-- 候选选择的数据来源收在 `startCandidateSource` 接口（`start_candidates.go`），后续动态 candidates 源实现该接口即可，不改变本节任何字段或兼容约定。
+- **The two write paths fail differently on an old hub/manager, and a writer must know which it is talking to.** On the dedicated `PUT /api/v1/assistant/start-defaults` route, `DisallowUnknownFields` makes an old hub answer 400 to `applies_when` / `candidates`. On the older nested `start_defaults` of `PUT /api/v1/assistant`, the handler decoded with a plain `json.Decoder`, so an old manager **silently ignores** the new fields instead of failing: it can return 200 while storing an empty match and no candidates, which turns a worker-scoped rule into an all-task rule. There is no capability bit to read, so the safe order is to `GET /api/v1/assistant/start-defaults` first and check whether the answer carries `applies_when` / `candidates` (present means a new peer), then write only the field names that peer understands. Never "try both names" within one write as a fallback.
+- Reads answer both field names, so an old reader that GETs and then PUTs back does not wipe the policy to empty rules. An old reader does not know `priority`: it drops the field when re-encoding, so a prioritized policy does **not** round-trip through an old reader unchanged — every priority comes back as 0 and equal-weight selection order applies.
+- Semantics are not loosened: `assistant.start_defaults` is still granted by name only, an extension's policy still must expire within an hour, unknown fields are still a 400 on the strict route, and the preview writes no state. Aliases are never silently merged; a genuine value conflict must be resolved by the writer.
+- Candidate selection reads one `startCandidateSource` interface (`start_candidates.go`); a future dynamic candidates source implements it and changes none of the fields or compatibility rules in this section.
 
 ## 配置、目录、服务与升级渠道
 

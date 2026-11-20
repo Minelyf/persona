@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"reflect"
 	"slices"
@@ -374,11 +375,15 @@ func startDefaultsMatch(m StartDefaultsMatch, f StartFacts) bool {
 	return true
 }
 
+// presetEntropy is the trusted source the weight roll reads: crypto/rand in production, swappable in a test so the
+// test can prove the roll really draws from it rather than from a predictable generator.
+var presetEntropy io.Reader = crand.Reader
+
 // presetIntN is the roll over the usable presets' weights, from a crypto-grade source; a var so tests are
 // deterministic. It keeps the func(int) int shape (session_adopt.go's precedent for an entropy failure: panic with
 // the cause, never a silent zero).
 var presetIntN = func(n int) int {
-	v, err := crand.Int(crand.Reader, big.NewInt(int64(n)))
+	v, err := crand.Int(presetEntropy, big.NewInt(int64(n)))
 	if err != nil {
 		panic(fmt.Sprintf("assistant: cannot roll a start preset's weight: %v", err))
 	}

@@ -2242,9 +2242,12 @@ list `then.candidates`, each candidate `{"name","priority"?,"weight"?}`; the pre
 `presets` are still accepted on every decode (stored policies included), reads answer both names with the same values,
 and a body whose two names disagree is refused (#11719).
 `POST /api/v1/assistant/start-defaults/preview` (same scope, read-only) answers what a policy would do for a task
-without doing any of it: the rule that fits, the winning priority group's usable candidates and the passed-over
-reasons, the extras, and which of them the caller's own values win. It runs the same matching and selection as a real
-start and writes nothing — a draft policy in the body is only validated, never stored.
+without doing any of it: the rule that fits (an omitted `task.role` is `worker`), the winning priority group's usable
+candidates and the passed-over reasons, the extras, and which of them the caller's own values win. Goal, effort and
+ultracode follow the same rules a real start applies to the `agent` in the body (default `claude`): effort and
+ultracode only for Claude Code, the goal through `startGoalSource` (so a rule's goal with no criteria sets nothing,
+and a new Codex start takes the default goal exactly when no rule names one). It runs the same matching and candidate
+selection as a real start and writes nothing — a draft policy in the body is only validated, never stored.
 
 - **Candidate source** (`internal/assistant/start_candidates.go`): selection reads one small interface,
   `startCandidateSource`, which answers each preset's availability and reason on a machine. The built-in source reads

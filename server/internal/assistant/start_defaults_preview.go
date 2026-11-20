@@ -36,6 +36,9 @@ func (s *Service) startDefaultsPreviewRoutes() {
 				Effort    string `json:"effort,omitempty"`
 				Ultracode *bool  `json:"ultracode,omitempty"`
 			} `json:"caller"`
+			// Agent is the agent the preview is for ("claude", "codex", or another launcher's agent). Default claude,
+			// the ordinary task-Agent default. Effort and ultracode reach only claude; the goal follows startGoalSource.
+			Agent         string               `json:"agent,omitempty"`
 			StartDefaults *StartDefaultsPolicy `json:"start_defaults,omitempty"`
 		}
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, startDefaultsBodyLimit))
@@ -80,22 +83,49 @@ func (s *Service) startDefaultsPreviewRoutes() {
 		} else {
 			policy = s.activeStartDefaults(ctx)
 		}
+		agent := strings.TrimSpace(in.Agent)
+		if agent == "" {
+			agent = "claude"
+		}
 		facts := StartFacts{
+			// roleOf: an ordinary task is a worker; only a task leader is a leader. An omitted role is a worker, exactly
+			// as a real start reads it, so an empty role cannot silently dodge a worker-scoped rule.
 			Machine: m.ID, Role: in.Task.Role, Readonly: in.Task.Readonly,
 			Supervisor: in.Task.Supervisor, DoneWhen: in.Task.DoneWhen,
 		}
-		apierr.WriteJSON(w, s.previewStartDefaults(ctx, policy, facts, in.Caller.Launcher, in.Caller.Model, in.Caller.Tier, in.Caller.Effort, in.Caller.Ultracode))
+		if facts.Role == "" {
+			facts.Role = "worker"
+		}
+		apierr.WriteJSON(w, s.previewStartDefaults(ctx, policy, facts, agent, in.Caller.Launcher, in.Caller.Model, in.Caller.Tier, in.Caller.Effort, in.Caller.Ultracode))
 	})
 }
 
-// previewStartDefaults answers the preview body. policy nil or with no fitting rule reports matched=false and the
-// caller's own start, which is exactly what happens without the feature. It performs only reads.
-func (s *Service) previewStartDefaults(ctx context.Context, policy *StartDefaultsPolicy, facts StartFacts, launcher, model, tier, effort string, ultracode *bool) map[string]any {
+// previewStartDefaults answers the preview body. A nil policy or no fitting rule reports matched=false, which is
+// exactly what happens without the feature (the Codex default goal still applies). Goal, effort and ultracode follow
+// the same rules a real start applies to agent, so the preview never advertises a value the start would not set.
+// It performs only reads.
+func (s *Service) previewStartDefaults(ctx context.Context, policy *StartDefaultsPolicy, facts StartFacts, agent, launcher, model, tier, effort string, ultracode *bool) map[string]any {
 	out := map[string]any{"matched": false}
-	if policy != nil && policy.By != "" {
-		out["by"] = policy.By
+	var d StartDefaults
+	matched := false
+	if policy != nil {
+		if policy.By != "" {
+			out["by"] = policy.By
+		}
+		d, matched = matchStartDefaults(policy, facts)
 	}
-	if policy == nil {
+	out["matched"] = matched
+	// The goal is decided by startGoalSource with or without a fitting rule, because a new Codex start takes the
+	// done_when goal by default precisely when no rule names one. A rule's goal with no criteria sets nothing, so a
+	// preview must not echo it.
+	if goal, byDefault := startGoalSource(d, matched, agent, false, facts.DoneWhen); goal {
+		if byDefault {
+			out["goal_by_default"] = true
+		} else {
+			out["goal"] = d.Goal
+		}
+	}
+	if !matched {
 		return out
 	}
 	ruleIndex := -1
@@ -105,16 +135,8 @@ func (s *Service) previewStartDefaults(ctx context.Context, policy *StartDefault
 			break
 		}
 	}
-	d, matched := matchStartDefaults(policy, facts)
-	if !matched {
-		return out
-	}
-	out["matched"] = true
 	out["rule_index"] = ruleIndex
 	out["applies_when"] = policy.Rules[ruleIndex].When
-	if d.Goal != "" {
-		out["goal"] = d.Goal
-	}
 	if d.PlanFirst {
 		out["plan_first"] = true
 	}
@@ -163,11 +185,15 @@ func (s *Service) previewStartDefaults(ctx context.Context, policy *StartDefault
 			}
 		}
 	}
-	if d.Effort != "" {
-		out["effort"] = d.Effort
-	}
-	if d.Ultracode != nil {
-		out["ultracode"] = *d.Ultracode
+	// Effort and ultracode reach Claude Code only (applyStartExtras); on any other agent the policy's values are not
+	// applied, so the preview leaves them out rather than advertising a start that would not carry them.
+	if agent == "claude" {
+		if d.Effort != "" {
+			out["effort"] = d.Effort
+		}
+		if d.Ultracode != nil {
+			out["ultracode"] = *d.Ultracode
+		}
 	}
 	if len(callerWins) > 0 {
 		out["caller_wins"] = callerWins

@@ -168,6 +168,12 @@ describe("prepaid balances (#11825)", () => {
     expect(topAccounts(got).map((a) => a.id)).toEqual(["ok"]);
     expect(balanceText(got[0].balance!)).toBe("CNY 12.34");
   });
+  it("leaves a DeepSeek account that reports windows as an ordinary bar account", () => {
+    const gateway: UsageAccount = { id: "ds-window", provider: "deepseek", name: "DeepSeek gateway", windows: [win("7d", 10080, 10, 24 * H)], sampled_at: at(-60_000) };
+    expect(isBalanceAccount(gateway)).toBe(false);
+    expect(balanceAccounts([gateway])).toEqual([]);
+    expect(topAccounts([gateway]).map((a) => a.id)).toEqual(["ds-window"]);
+  });
   it("keeps a genuine zero apart from a failed read", () => {
     const zero = bal("ds", "0.00");
     const failed: UsageAccount = { ...bal("ds", "0.00"), balance: undefined, problem: "unreachable" };

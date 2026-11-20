@@ -437,6 +437,9 @@ func (n *Node) decorateState(s *proto.Session, managesModel bool) (sessionState,
 		s.StartedByPersona = true
 		s.Launcher = st.Launcher
 		s.SetCreationID(st.CreationID)
+		if st.TaskExecution {
+			classifyTaskTurnFailure(s)
+		}
 		if managesModel {
 			model := st.Model
 			s.RequestedModel = &model

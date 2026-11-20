@@ -191,7 +191,24 @@ if [ "$LANE" = all ] || [ "$LANE" = ios ]; then
   IOS_UNIT_SELECTION=("${IOS_EXCLUSIONS[@]}" -only-testing:PersonaTests
     -skip-testing:PersonaTests/AssistantHTMLCardTests -skip-testing:PersonaTests/AssistantHTMLSecurityTests)
   # A generic destination must retain the host's single runnable architecture.
-  ci_run 'Build iOS offline unit tests' 1800 "${IOS_COMMON[@]}" \
+  ci_run 'Build iOS offline unit tests' 1800 bash -c '
+    set -euo pipefail
+    ci_root="$1"; output="$2"; shift 2
+    watch_log="$output/diagnostics/build-resources"
+    mkdir -p "$watch_log"
+    python3 "$ci_root/scripts/ci/apple_build_watch.py" \
+      --output "$watch_log" --stop "$watch_log/stop" --seconds 1800 &
+    watcher=$!
+    stop_watcher() {
+      local code=$?
+      trap - EXIT TERM INT
+      : > "$watch_log/stop"
+      wait "$watcher" || true
+      exit "$code"
+    }
+    trap stop_watcher EXIT TERM INT
+    "$@"
+  ' -- "$CI_ROOT" "$OUTPUT" "${IOS_COMMON[@]}" \
     -destination 'generic/platform=iOS Simulator' ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES \
     "${IOS_UNIT_SELECTION[@]}" build-for-testing
   ci_run 'No CallKit in the simulator build' 300 python3 "$CI_ROOT/scripts/release/check_no_callkit.py" \

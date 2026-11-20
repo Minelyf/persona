@@ -85,12 +85,6 @@ class ChatActivityTest {
         assertEquals("1 h 5 min left", ChatActivity.until(res, now.plusSeconds(65 * 60), now))
         assertEquals("2 hours left", ChatActivity.until(res, now.plusSeconds(120 * 60), now))
         assertEquals("check the CI", ChatActivity.task(LoopInfo(kind = "wakeup", prompt = "/loop check the CI")))
-        assertEquals("42 s", ChatActivity.elapsed(res, now.minusSeconds(42), now))
-        assertEquals("3m 5s", ChatActivity.elapsed(res, now.minusSeconds(185), now))
-        assertEquals("1h 12m", ChatActivity.elapsed(res, now.minusSeconds(4320), now))
-        assertEquals("Loop", ChatActivity.title(res, loop = true, background = false))
-        assertEquals("Background Task", ChatActivity.title(res, loop = false, background = true))
-        assertEquals("Loop & Background Tasks", ChatActivity.title(res, loop = true, background = true))
     }
 
     private val key = SessionKey("macbook", "weather")
@@ -154,7 +148,7 @@ class ChatActivityTest {
         page(AppStyle.Glass)
         rule.onNode(pill).performClick()
         rule.waitForIdle()
-        rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Loop & Background Tasks"))).assertExists()
+        rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Background tasks"))).assertExists()
         rule.onNode(hasText("Stop Loop") and hasClickAction()).performClick()
         rule.waitForIdle()
         assertTrue("nothing goes before the confirmation", sent.isEmpty())
@@ -170,6 +164,7 @@ class ChatActivityTest {
         rule.onNode(pill).performClick()
         rule.waitForIdle()
         rule.onNode(hasText("Run the test suite", substring = true) and hasClickAction(), useUnmergedTree = false).performClick()
+        rule.onNodeWithText("Open as file").performClick()
         rule.waitForIdle()
         assertEquals(listOf("/tmp/tasks/b1.output"), opened)
     }

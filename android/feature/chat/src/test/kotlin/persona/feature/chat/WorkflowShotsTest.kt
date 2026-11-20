@@ -260,8 +260,13 @@ class WorkflowShotsTest {
     private fun result(id: String, text: String) = Item("$id-r", kind = "tool_result", role = "user", text = text, toolUseId = id).asLineItem()
     private fun call(id: String, name: String, input: JsonObject = buildJsonObject {}) = WorkItem.Tool(ToolCall(use(id, name, input), result(id, "ok"), emptyList()))
 
-    @Test
-    fun drawsTheCardInsideTheExpandedChatTrace() {
+    @Test fun drawsTheCardInsideTheExpandedChatTrace() = captureChatTrace("")
+
+    @Test @Config(fontScale = 2f)
+    fun drawsTheCardInsideTheExpandedChatTraceAtLargestText() = captureChatTrace("-large")
+
+    private fun captureChatTrace(scale: String) {
+        var openedRun: Workflow? = null
         val read = call("r1", "Read", buildJsonObject { put("file_path", "/w/WeatherWidget/Provider.swift") })
         val launch = call("toolu_wf_run", "Workflow", buildJsonObject { put("name", "widget-review") })
         val reply = Item("r#0", kind = "text", role = "assistant", text = "widget-review is running in the background; I will go on when it reports back.")
@@ -271,7 +276,9 @@ class WorkflowShotsTest {
                 val context = LocalContext.current
                 val loader = remember { ImageLoader.Builder(context).build() }
                 val folds = remember { WorkflowFolds() }
-                CompositionLocalProvider(LocalChatWorkflows provides ChatWorkflows(mapOf("toolu_wf_run" to running), folds) {}) {
+                CompositionLocalProvider(LocalChatWorkflows provides ChatWorkflows(
+                    mapOf("toolu_wf_run" to running), folds, open = {}, openBackground = { openedRun = it },
+                )) {
                     Column(Modifier.testTag("shot").width(400.dp).background(PersonaTheme.palette.background).padding(Tokens.Space.l)) {
                         ChatLineContent(ChatLine.Work("w-1", listOf(read, launch), live = false, start = null, end = null, open = true),
                             SessionKey("mac", "lead"), loader, recordedDuration = 75, onToggle = {}, onFold = {}, folding = emptySet(),
@@ -288,8 +295,10 @@ class WorkflowShotsTest {
             rule.runOnIdle { dark = nextDark }
             rule.waitForIdle()
             rule.onNodeWithText("当前 Verify：verify:a11y").assertIsDisplayed()
-            shot("workflow-chat-glass-${if (nextDark) "dark" else "light"}")
+            shot("workflow-chat-glass-${if (nextDark) "dark" else "light"}$scale")
         }
+        rule.onNodeWithText("在后台任务中打开").performClick()
+        assertEquals(running.runId, openedRun?.runId)
     }
 
     @Test

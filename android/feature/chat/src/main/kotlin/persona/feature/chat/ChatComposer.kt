@@ -99,6 +99,7 @@ fun ChatComposer(
      * the chat has no mode picker, so the words are an ordinary message there.
      */
     onPermissions: (() -> Unit)? = null,
+    onWorkflows: (() -> Unit)? = null,
     /** /loop in the "/" list, with a line under the box saying what it will do (Claude Code only, web `hasLoop`). */
     loop: Boolean = false,
     /**
@@ -350,7 +351,7 @@ fun ChatComposer(
             permissions = onPermissions != null)
     } else {
         SlashCommand.suggestions(slashDraft, canClear && !working, resources, model = onModel != null, loop = loop,
-            permissions = onPermissions != null, keepExact = saved.isNotEmpty())
+            permissions = onPermissions != null, keepExact = saved.isNotEmpty(), workflows = onWorkflows != null)
     }
     val hint = if (loop) loopHint(slashDraft, resources) else null
     // @: the word being typed just before the caret, while nothing is selected and no "/" list is open.
@@ -423,7 +424,7 @@ fun ChatComposer(
     // /permissions typed out opens the mode picker (shared with LargeWindowComposer's hardware send path).
     fun send() {
         if (dictate?.active == true) return
-        dispatchComposerSend(state, extraContent, mainClear, onPermissions, onSend)
+        dispatchComposerSend(state, extraContent, mainClear, onPermissions, onWorkflows, onSend)
     }
     // Picking a quick message puts its words in the box to send; /clear empties the box and asks first (the main
     // conversation's clears at once).
@@ -434,6 +435,7 @@ fun ChatComposer(
             command.clear -> { state.value = TextFieldValue(); confirmClear = true }
             command.model -> { state.value = TextFieldValue(); onModel?.invoke() }
             command.permissions -> { state.value = TextFieldValue(); onPermissions?.invoke() }
+            command.workflows -> { state.value = TextFieldValue(); onWorkflows?.invoke() }
             else -> state.value = TextFieldValue(command.text, TextRange(command.text.length))
         }
     }
@@ -618,6 +620,7 @@ internal fun dispatchComposerSend(
     extraContent: Boolean,
     mainClear: MainChatClear?,
     onPermissions: (() -> Unit)?,
+    onWorkflows: (() -> Unit)? = null,
     onSend: () -> Unit,
 ) {
     when {
@@ -630,6 +633,12 @@ internal fun dispatchComposerSend(
             state.beginEdit()
             state.value = TextFieldValue()
             onPermissions?.invoke()
+        }
+        onWorkflows != null && !state.hasPickedSavedPrompt && SlashCommand.isWorkflows(state.value.text) &&
+            state.attachments.isEmpty() && !extraContent -> {
+            state.beginEdit()
+            state.value = TextFieldValue()
+            onWorkflows()
         }
         else -> onSend()
     }

@@ -547,6 +547,79 @@ final class SidebarRootsUITests: XCTestCase {
         }
     }
 
+    /// Every root brings its folded sidebar back with one visible button (#11636): the main conversation, a place, a place
+    /// whose drill-down was popped, and an Agent's chat. On the open Duo on its side the system's Show Sidebar was never
+    /// drawn on a root the sidebar had swapped in, which left an Agent's chat (and a place) with no way back to the
+    /// sidebar. The button is at the top leading corner everywhere (under side bars the system's Show Sidebar, on the
+    /// title's line). Where the column lies over the page (the open Duo upright) or is a phone's drawer, a pick already
+    /// put it away: the same button brings it back.
+    @MainActor func testAFoldedSidebarComesBackOnEveryRoot() {
+        continueAfterFailure = true // every root, not only the first
+        launch()
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 20))
+        _ = settled("conversation", "launch")
+        let openers = app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label IN %@",
+                                                       ["ToggleSidebar", "chat-sidebar-button", "sidebar-show-button",
+                                                        "assistant-sidebar-button", "sidebar-drawer-button"],
+                                                       ["Show Sidebar", "显示边栏", "显示侧边栏"]))
+        func check(_ root: String) {
+            let main = element("sidebar-main")
+            let fold = element("sidebar-fold-column")
+            if fold.exists && fold.isHittable {
+                fold.tap()
+                let deadline = Date.now.addingTimeInterval(5)
+                while Date.now < deadline, main.exists && main.isHittable { Thread.sleep(forTimeInterval: 0.2) }
+                Thread.sleep(forTimeInterval: 1.0) // the column's slide
+            }
+            XCTAssertFalse(main.exists && main.isHittable, "\(root): the sidebar is still out")
+            shot("11636-\(root)-folded")
+            guard let opener = openers.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) else {
+                return XCTFail("\(root): no button brings the folded sidebar back:\n\(app.debugDescription)")
+            }
+            // At the top leading corner, where a root's button is on every device (under side bars the system's, on the
+            // title's line: docs/apple/ios.md, "iPhone Duo").
+            XCTAssertTrue(opener.frame.minX < 100 && opener.frame.midY < 120,
+                          "\(root): the sidebar's button \(opener.frame) is not at the top leading corner")
+            let frame = opener.frame
+            window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
+            XCTAssertTrue(main.waitForExistence(timeout: 5) && main.isHittable,
+                          "\(root): its button did not bring the sidebar back:\n\(app.debugDescription)")
+            _ = settled(root, "\(root) with the sidebar brought back")
+        }
+
+        check("conversation")
+        pick("sidebar-meeting-recording", "Recordings")
+        _ = settled("recordings", "Recordings")
+        check("recordings")
+        _ = pickAgent("an Agent")
+        check("agent")
+
+        // A place whose drill-down was popped: UIKit did not draw its toggle again there (#8603).
+        pick("sidebar-machines", "Machines")
+        let machines = settled("machines", "Machines")
+        let cards = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'MacBook'"))
+        _ = cards.firstMatch.waitForExistence(timeout: 10)
+        let pageStart = column.exists && column.isHittable ? column.frame.maxX : 0
+        func onPage() -> XCUIElement? {
+            cards.allElementsBoundByIndex.first { $0.exists && $0.isHittable && $0.frame.minX >= pageStart }
+        }
+        for _ in 0..<6 where onPage() == nil {
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7))
+                .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.4)))
+        }
+        guard let card = onPage() else { return XCTFail("no MacBook card on the page:\n\(app.debugDescription)") }
+        card.tap()
+        let machine = settled("machines", "a machine")
+        XCTAssertEqual(machine.path, 1, "the machine's page was not pushed: \(machines) → \(machine)")
+        let back = app.buttons.matching(identifier: "BackButton").allElementsBoundByIndex.first { $0.exists && $0.isHittable }
+        XCTAssertNotNil(back, "no Back on the machine's page:\n\(app.debugDescription)")
+        back?.tap()
+        let popped = settled("machines", "Machines after Back")
+        XCTAssertEqual(popped.path, 0, "Back did not pop the machine's page: \(popped)")
+        check("machines")
+    }
+
     /// The Separate layout's Agents tab (#8603): an Agent picked in its list is the page's root, put in place with no push,
     /// as in the Sidebar layout; another one picked replaces it, again with no push; nothing picked, "Choose an Agent". With
     /// the column folded the chat has the sidebar's button and no ‹, which brings the column back.
@@ -650,17 +723,10 @@ final class SidebarRootsUITests: XCTestCase {
             let openers = app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label IN %@",
                                                            ["chat-sidebar-button", "ToggleSidebar", "sidebar-show-button", "assistant-sidebar-button"],
                                                            ["Show Sidebar", "显示边栏", "显示侧边栏"]))
-            if openers.allElementsBoundByIndex.contains(where: { $0.exists && $0.isHittable }) {
-                assertOneSelected("agents.row", containing: name, "the column folded and brought back over the Agent")
-            } else {
-                // The open Duo on its side: no button brings a folded column back over an Agent's chat, on main too
-                // (testFoldingTheSidebarKeepsTheChatsTop fails there the same way); the rest from a fresh launch.
-                XCTContext.runActivity(named: "no button brings the folded column back here; relaunched") { _ in }
-                app.terminate()
-                launch(["-dev.grouping", "state"])
-                _ = settled("conversation", "relaunch after the fold")
-                bringOut()
-            }
+            let opener = openers.allElementsBoundByIndex.first { $0.exists && $0.isHittable }
+            XCTAssertNotNil(opener, "no button brings the folded column back over the Agent:\n\(app.debugDescription)")
+            opener?.tap()
+            assertOneSelected("agents.row", containing: name, "the column folded and brought back over the Agent")
         }
 
         pick("sidebar-meeting-recording", "Recordings")

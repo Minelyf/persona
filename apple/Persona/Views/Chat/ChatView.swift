@@ -4255,8 +4255,8 @@ struct ChatView: View {
     /// Under side bars in a split (the open Duo on its side) the page starts `Theme.Space.xl` from the top whatever its
     /// navigation bar holds. The bar holds nothing across the top (its actions are in the side column, its title is
     /// removed) but, with the column folded, the system's Show Sidebar, and that row pushed the header and the chat 58 pt
-    /// down. The empty bar put the page `Theme.Space.xl` down, so with the column out nothing moves; folded, the system's
-    /// button lies on the title's line at the top left, as on a place. Not while typing: the bar then shows the system's
+    /// down. The empty bar put the page `Theme.Space.xl` down, so with the column out nothing moves; folded, the sidebar's
+    /// button (the header's own, `headerShowsList`) lies on the title's line at the top left, as the system's on a place. Not while typing: the bar then shows the system's
     /// title over the content, and the header is only fog. Not in a hosting sheet, which has a bar of its own.
     private var pinsSideTop: Bool {
         #if os(iOS)
@@ -4266,9 +4266,12 @@ struct ChatView: View {
         #endif
     }
 
-    /// The list folded under side bars: the system's Show Sidebar at the top left brings it back (#3680), so the side
-    /// column has no second one.
-    private var systemShowsList: Bool { backShowsList && split?.sideBars == true }
+    /// The list folded under side bars: the header's own Show Sidebar at the top left brings it back (#3680, #11636), on
+    /// the title's line, so the side column has no second one. Not the system's: iOS draws its toggle in the bar's title
+    /// row, which the chat removes while its header shows its own title (a second title over the header), and the
+    /// toggle went with it, leaving an Agent's chat picked in the sidebar with no way back to the sidebar. While typing
+    /// the header is only fog and the system's title is back, its toggle with it.
+    private var headerShowsList: Bool { backShowsList && split?.sideBars == true }
 
     /// Under side bars, a page pushed onto another, on its chat: Back is the system's own (#9971). It does what ours does
     /// there (one page back), the system puts it at the top of the side column, and only with it does iOS's swipe back
@@ -4284,7 +4287,7 @@ struct ChatView: View {
     /// Git for the chat first), then the panes, the terminal and ⋯. Each has a title as well as a symbol: the column
     /// shows the symbol, the overflow menu both.
     @ToolbarContentBuilder private var sideBarItems: some ToolbarContent {
-        if !hidesBack && !systemShowsList && !systemBack {
+        if !hidesBack && !headerShowsList && !systemBack {
             ToolbarItem(placement: .topBarLeading) {
                 // A hosting sheet's ✕ Close, its pushed page's ‹ Back, the panes' ‹ Back (#2625): as the header's would be.
                 Button { back() } label: { Label(backLabel, systemImage: backSymbol) }
@@ -4314,7 +4317,7 @@ struct ChatView: View {
         var all: [SessionPane] = pane != .chat ? [.chat] : []
         if session?.canTerminal == true { all.append(.terminal) }
         all += panes.filter { ($0 == .git || $0 == .files) && $0 != pane }
-        let back = !hidesBack && !systemShowsList
+        let back = !hidesBack && !headerShowsList
         return Array(all.prefix(TabSwitchLayout.pageButtons(all.count, back: back, room: sideColumn?.room)))
     }
 
@@ -4359,7 +4362,20 @@ struct ChatView: View {
     }
 
     @ViewBuilder private var sideHeaderRows: some View {
-        titleButton
+        if headerShowsList {
+            // The sidebar's button at the title's leading end (#11636), laid over the row so the title stays where it is
+            // with the column out; the title keeps clear of it.
+            titleButton
+                .padding(.horizontal, Theme.Size.tapTarget + Theme.Space.s)
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .leading) {
+                    headerBackButton
+                        .modifier(SidebarButtonID(active: true))
+                        .overlay(alignment: .topTrailing) { SidebarWaitingBadge() }
+                }
+        } else {
+            titleButton
+        }
         let hasActivity = session?.loop != nil || !(session?.background ?? []).isEmpty
         let tabs = host == nil && session?.spaceKey != nil
         let mode = headerModeSession

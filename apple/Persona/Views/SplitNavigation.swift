@@ -132,7 +132,8 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
                     #if os(iOS)
                     // Roots (#8603): the column has its own fold button and each root its own sidebar button
                     // (`ListButtonItem`); the system's toggle was not drawn again after a root's drill-down was popped.
-                    // Under side bars (the Duo on its side) their Show Sidebar is the system's, and stays.
+                    // Under side bars (the Duo on its side) a place's Show Sidebar is the system's, and stays; an Agent's
+                    // chat draws its own in its header (`ChatView.headerShowsList`, #11636).
                     .toolbar(removing: rootsSwap && !sideBars ? .sidebarToggle : nil)
                     .safeAreaPadding(.top, topPad(listSafeTop))
                     .background { readsSafeTop { listSafeTop = $0 } }

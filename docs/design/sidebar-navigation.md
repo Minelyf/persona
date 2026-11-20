@@ -202,8 +202,8 @@ switch the detail without a push when a sidebar item is chosen; only drilling do
 - **Drill-downs**: what a page opens inside itself (an Inbox item, a machine's details, a recording, a conversation an item
   links to) is pushed on the root, with Back, as before.
 - **The top-leading button follows how the page was reached, not what it is (#8603)**: a root has the button that opens the
-  sidebar (the main conversation's, `Theme.Icon.sidebar`; the persona's face in a phone's drawer; the system's Show Sidebar
-  under side bars), never a ‹; a drill-down has ‹, which goes back one page. The same Agent's chat is a root when picked in
+  sidebar (the main conversation's, `Theme.Icon.sidebar`; the persona's face in a phone's drawer; under side bars the
+  system's Show Sidebar on a place, the chat header's own on an Agent's chat, #11636, both on the title's line), never a ‹; a drill-down has ‹, which goes back one page. The same Agent's chat is a root when picked in
   the sidebar and a drill-down when opened from a waiting Agent on the main conversation or in Inbox. A place's root draws
   that button itself (`ListButtonItem`): the system's toggle was not drawn again after a drill-down on it was popped (the
   open Duo upright, Inbox → an Agent's chat → Back), which left the root with no way back to the sidebar. The system's

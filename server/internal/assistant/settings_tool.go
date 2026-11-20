@@ -185,8 +185,9 @@ func (s *Service) ownSettings() []ownSetting {
 		{Setting: Setting{Key: "assistant.leaders", Title: "Leader conversations", Actions: getSet,
 			About: "empty (the default): no manual Agent is assigned to a leader. New task_plan, agent_start and agent_send task work " +
 				"is always supervised by the main conversation, including task_plan(supervisor=leader). The one exception is a manually " +
-				"started Agent the owner explicitly puts under a leader: its ordinary supervision messages go there and that leader reviews " +
-				"them with task_review; needs_user and failed starts still come to the main conversation",
+				"started Agent the owner explicitly puts under a leader: its ordinary supervision messages and failed starts go there and " +
+				"that leader reviews them with task_review; needs_user still comes to the main conversation, and every other new " +
+				"assistant-dispatched failed start goes there too",
 			Value: "the whole list of leader conversation ids (conversations_list), [] for none"},
 			get: s.getLeaders,
 			set: s.setLeaders},
@@ -261,9 +262,10 @@ func (s *Service) ownSettings() []ownSetting {
 			set: s.setInboxSignals},
 		{Setting: Setting{Key: "assistant.main_supervises_own_tasks", Title: "The main chat supervises its own tasks", Actions: getSet,
 			About: "compatibility only, whether off (the default) or on: the main conversation supervises every new task no leader " +
-				"supervises and receives its supervision messages. An already configured background conversation only finishes its " +
-				"previously assigned supervision notices; no background conversation is created or selected for new work. Failed starts " +
-				"and needs_user still go to main. Changing the setting does not move existing notices or stop tasks",
+				"supervises and receives its supervision messages. The main conversation still hears of failed starts with no current " +
+				"leader and of what an already configured background conversation hands to the user; that background only finishes its " +
+				"previously assigned supervision notices, and none is created or selected for new work. Changing the setting does not move " +
+				"existing notices or stop tasks",
 			Value: "true or false"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.mainSupervisesOwnTasks(ctx)), nil },
 			set: s.setMainSupervisesOwnTasks},

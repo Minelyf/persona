@@ -29,7 +29,12 @@ func (f *fakeHub) noticesTo(id string) []string {
 // while main supervises the task (#5732).
 func newLeaderService(t *testing.T) (*Service, *fakeHub, Todo) {
 	t.Helper()
-	s, f := newQuietService(t)
+	return newLeaderServiceOn(t, nil)
+}
+
+func newLeaderServiceOn(t *testing.T, st Store) (*Service, *fakeHub, Todo) {
+	t.Helper()
+	s, f := newQuietServiceOn(t, st)
 	f.judge = `{"verdict":"done","reason":"PR 已合并"}`
 	f.known["lead1"] = true
 	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
@@ -228,7 +233,10 @@ func TestDigestTo(t *testing.T) {
 		{"no leaders: main", none, superviseSignal{Todo: leads, Kind: sigReview}, "conv1"},
 		{"leader's task waits for the user", leaders, superviseSignal{Todo: waits, Kind: sigIdle}, "conv1"},
 		{"leader's escalation", leaders, superviseSignal{Todo: waits, Kind: sigEscalated}, "conv1"},
-		{"leader's failed start", leaders, superviseSignal{Todo: leads, Kind: sigFailed}, "conv1"},
+		{"leader's failed start", leaders, superviseSignal{Todo: leads, Kind: sigFailed}, "lead1"},
+		{"failed start while needs_user", leaders, superviseSignal{Todo: waits, Kind: sigFailed}, "conv1"},
+		{"main's failed start", leaders, superviseSignal{Todo: mains, Kind: sigFailed}, "conv1"},
+		{"a removed leader's failed start", none, superviseSignal{Todo: leads, Kind: sigFailed}, "conv1"},
 		{"gone", leaders, superviseSignal{Todo: "nope", Kind: sigReview}, "conv1"},
 	} {
 		if got := s.digestTo(ctx, c.cfg, c.g); got != c.want {

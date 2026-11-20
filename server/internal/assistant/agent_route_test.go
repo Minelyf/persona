@@ -312,6 +312,25 @@ func (m *planMemStore) TaskPlansByID(_ context.Context, ids []string) ([]db.Task
 	return out, nil
 }
 
+func (m *planMemStore) TaskPlansMadeSince(_ context.Context, since time.Time) ([]db.TaskPlanRow, error) {
+	m.pmu.Lock()
+	defer m.pmu.Unlock()
+	var out []db.TaskPlanRow
+	for _, p := range m.plans {
+		if p.CreatedAt.Before(since) || p.State != planStarted && p.State != planDismissed {
+			continue
+		}
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b db.TaskPlanRow) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
+}
+
 func (m *planMemStore) AppendFeed(_ context.Context, r db.FeedRow) error {
 	m.pmu.Lock()
 	defer m.pmu.Unlock()

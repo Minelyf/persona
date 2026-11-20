@@ -86,8 +86,18 @@ type superviseSignal struct {
 	Unreachable      bool
 	At               time.Time
 	Machine, Session string
-	Detail, Ask      string
-	Minutes          int
+	// Launcher is the actual launcher a failed start used. Recipient is the final conversation or task-leader
+	// destination, and NotBefore holds a repeated failure until its persistent deduplication window expires.
+	Launcher  string
+	Recipient string
+	NotBefore time.Time
+	Remedying bool
+	// Generation identifies a failed-start event independently of its queue position. failedClaim is the local
+	// manager's delivery claim; Claims in the durable batch document carries it between managers.
+	Generation  time.Time `json:"generation,omitzero"`
+	failedClaim string
+	Detail, Ask string
+	Minutes     int
 	// A report's (sigReport): its kind (progress, question, blocked, done), evidence and the step it is on.
 	SourcePermission proto.SourcePermission
 	Report           string
@@ -158,7 +168,7 @@ func (g superviseSignal) urgent() bool {
 	switch g.Kind {
 	case sigNeedsYou, sigIdle, sigUnjudged, sigAllStopped, sigFailed, sigInterrupted, sigStarted, sigPRConflict, sigDraftPR, sigEscalated, sigAsk, sigOrphaned, sigDecide, // started: the user waits to hear it
 		sigRecheck, sigUndecidable, sigOwnerCannot, // the owner waits on a decision they cannot answer as it is
-		sigParkDecided, sigDecisionReply: // the owner answered: what they said is acted on soon
+		sigParkDecided, sigDecisionReply, sigHandoffResult:
 		return true
 	case sigReport:
 		return g.Report != upReportProgress
@@ -174,21 +184,26 @@ func (g superviseSignal) urgent() bool {
 func (g superviseSignal) immediate() bool { return g.Kind == sigFailed }
 
 type superviseBook struct {
-	mu            sync.Mutex
-	writeMu       sync.Mutex          // one ledger write at a time (updateSupervision)
-	ownerPushMu   sync.Mutex          // ownerPushes only; never held across RPC, todo or database calls
-	ownerPushes   map[string]struct{} // todo + work currently being pushed and receipted
-	digestMu      sync.Mutex          // one whole digest, including todo and durable-pending restoration; teardown drains it
-	dedupMu       sync.Mutex          // serializes digest reservations and delivery
-	dedup         map[string]superviseFingerprint
-	pending       map[string]superviseSignal   // by todo|kind
-	pendingLoadMu sync.Mutex                   // one durable pending restoration at a time
-	pendingLoaded bool                         // the durable pending has been merged into pending
-	sent          map[string]string            // todo|kind → the key last told
-	asks          map[string]string            // todo → what its agent last asked (InteractionRaised)
-	last          time.Time                    // when the last supervision message went out
-	queued        map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
-	batch         map[string]time.Time         // conversation → its routine batch's first-signal deadline
+	mu          sync.Mutex
+	writeMu     sync.Mutex          // one ledger write at a time (updateSupervision)
+	ownerPushMu sync.Mutex          // ownerPushes only; never held across RPC, todo or database calls
+	ownerPushes map[string]struct{} // todo + work currently being pushed and receipted
+	digestMu    sync.Mutex          // one whole digest, including todo and durable-pending restoration; teardown drains it
+	dedupMu     sync.Mutex          // serializes digest reservations and delivery
+	dedup       map[string]superviseFingerprint
+	// failedBatchMu serializes the durable leader-failure cooldown document. failedBatches is its memory-only
+	// fallback when this manager has no store; failedBatchesLoaded says whether deferred members were restored.
+	failedBatchMu       sync.Mutex
+	failedBatches       failedStartBatchDoc
+	failedBatchesLoaded bool
+	pending             map[string]superviseSignal   // by todo|kind
+	pendingLoadMu       sync.Mutex                   // one durable pending restoration at a time
+	pendingLoaded       bool                         // the durable pending has been merged into pending
+	sent                map[string]string            // todo|kind → the key last told
+	asks                map[string]string            // todo → what its agent last asked (InteractionRaised)
+	last                time.Time                    // when the last supervision message went out
+	queued              map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
+	batch               map[string]time.Time         // conversation → its routine batch's first-signal deadline
 	// legacyBackground: legacyBackgroundKey(conversation, todo) → an old notice reached this background conversation,
 	// so it may finish that task. relayState persists the same grant across manager restarts.
 	legacyBackground map[string]bool
@@ -772,6 +787,9 @@ func digestWait(now, last time.Time, pending []superviseSignal, p superviseTimin
 	var due time.Time
 	for _, g := range pending {
 		at := g.At.Add(p.gather)
+		if g.NotBefore.After(at) {
+			at = g.NotBefore
+		}
 		if !last.IsZero() && !g.immediate() {
 			gap := p.every
 			if g.urgent() {
@@ -844,7 +862,23 @@ func (s *Service) queueSignalReplacing(old *superviseSignal, g superviseSignal) 
 		return
 	}
 	if cur, ok := b.pending[g.id()]; ok {
-		g.At = cur.At // still waiting: it keeps its place
+		if g.Kind == sigFailed {
+			if cur.Key != g.Key && newerFailedSignal(cur, g) {
+				b.mu.Unlock()
+				return // a restored or delayed old attempt cannot replace the newer pending one
+			}
+			if cur.Key == g.Key {
+				g.At = cur.At // the same failed attempt keeps its queue position and delivery generation
+				if g.Generation.IsZero() {
+					g.Generation = cur.Generation
+				}
+				if g.NotBefore.IsZero() {
+					g.NotBefore = cur.NotBefore
+				}
+			}
+		} else {
+			g.At = cur.At // still waiting: it keeps its place
+		}
 		if g.Ask == "" {
 			g.Ask = cur.Ask
 		}
@@ -941,6 +975,12 @@ func watchSignals(t Todo, agents []proto.Session, now time.Time, groups ...super
 	}
 	switch v.state(t) {
 	case reviewPending:
+		if h := v.handoffResult(); h != nil {
+			if h.ToldAt.IsZero() {
+				return []superviseSignal{handoffResultSignal(t.ID, h)}
+			}
+			return nil
+		}
 		return []superviseSignal{{Todo: t.ID, Kind: sigReview, Key: reviewKey(v)}}
 	case reviewParked: // nothing until its time, then that it came (parked.go)
 		if g, ok := parkedDueSignal(t, now); ok {
@@ -1072,6 +1112,7 @@ func (s *Service) superviseWatch(ctx context.Context, now time.Time) {
 			continue
 		}
 		s.remedyWatch(ctx, t, now, history) // a failed start's kept tab expired (start_remedy.go)
+		t = s.checkTaskHandoff(ctx, t, now)
 		agents := s.taskAgentsIn(ctx, t, lists)
 		group := s.allStoppedGroup(ctx, t, groups[t.ID], lists)
 		allStopped := false

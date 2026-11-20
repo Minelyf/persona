@@ -18,10 +18,10 @@ import (
 
 // Leader conversations (#3133, docs/assistant/unified-entry.md "Leader conversations"). Since #5732 the main
 // conversation supervises every new assistant-dispatched task. The two specialized topologies remain: a manually
-// started Agent the owner explicitly put under a leader keeps that leader for ordinary signals, and a task leader's
-// workers keep their leader Agent until it closes. What still needs the main conversation goes there: a leader's
-// needs_user (escalated, with the user's decision card as ever), a failed start (the start remedies are the main
-// conversation's) and anything about a task waiting for the user.
+// started Agent the owner explicitly put under a leader keeps that leader for ordinary signals and failed starts, and
+// a task leader's workers keep their leader Agent until it closes. Needs_user and anything about a task waiting for
+// the user still go to main. Every other new assistant-dispatched failed start goes to main; a successful retry's
+// started signal always goes there too.
 //
 // Depth is bounded: an agent handed out as a task's agent (a worker) hands out no Persona tasks itself (task_plan,
 // agent_start); it uses its own in-session subagents. Leaders and the main conversation are not limited.
@@ -291,7 +291,7 @@ func (s *Service) digestTo(ctx context.Context, cfg Settings, g superviseSignal)
 		return g.To
 	}
 	switch g.Kind {
-	case sigEscalated, sigFailed, sigStarted, sigLeaderStuck:
+	case sigEscalated, sigStarted, sigLeaderStuck:
 		return cfg.Main
 	}
 	if t, ok := s.todoNow(g.Todo); ok && t.Supervision != nil {
@@ -301,6 +301,11 @@ func (s *Service) digestTo(ctx context.Context, cfg Settings, g superviseSignal)
 				return cfg.Main
 			}
 			return sup
+		}
+		if g.Kind == sigFailed {
+			// Only an explicitly assigned manual leader keeps this route. New task_plan work, including a capable-runtime
+			// side chat's, still uses main's failed-start remedies (#5732).
+			return cfg.Main
 		}
 		// The explicit capable-runtime topology is the one side-chat exception to universal main supervision.
 		if sup != cfg.Main && sup == t.Origin && !s.isLeader(ctx, sup) && s.runtimeWithSupervisionPolicy(ctx, cfg.MachineID, sup) {
@@ -336,6 +341,9 @@ func (s *Service) digestRuntimeTarget(ctx context.Context, cfg Settings, g super
 	}
 	if to != cfg.Main && !s.runtimeWithoutSupervisionPolicy(ctx, cfg.MachineID, to) {
 		return to
+	}
+	if g.Kind == sigFailed {
+		return cfg.Main // the background supervisor has no start remedies; keep the legacy fallback for a failed start
 	}
 	own := s.runtimeSupervisorFallback(ctx, cfg)
 	s.logf("supervise: %s runs on a runtime that cannot take supervision policy: its signal goes to %s", short(to), short(own))

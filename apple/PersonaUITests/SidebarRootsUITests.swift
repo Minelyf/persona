@@ -151,8 +151,13 @@ final class SidebarRootsUITests: XCTestCase {
             if let title { return rows.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch }
             // Found by its label, not its place in the list (an element bound by index can name another row, or none,
             // once the list has scrolled).
+            // Only rows whose middle is inside the column are asked whether they are hittable: XCTest fails the test,
+            // rather than answering no, for a row clipped at the column's edge as the list glides ("activation point invalid").
+            let area = (try? column.snapshot())?.frame ?? .infinite
             let clear = rows.allElementsBoundByIndex.first {
-                $0.exists && $0.isHittable && !underJump($0) && !underHead($0) && !(excluding.map($0.label.contains) ?? false)
+                guard $0.exists, let frame = (try? $0.snapshot())?.frame, area.insetBy(dx: 0, dy: 8).contains(CGPoint(x: frame.midX, y: frame.midY))
+                else { return false }
+                return $0.isHittable && !underJump($0) && !underHead($0) && !(excluding.map($0.label.contains) ?? false)
             }
             guard let label = (clear.flatMap { try? $0.snapshot() })?.label else { return rows.firstMatch }
             return rows.matching(NSPredicate(format: "label == %@", label)).firstMatch

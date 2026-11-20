@@ -153,7 +153,9 @@ final class SidebarRootsUITests: XCTestCase {
             // once the list has scrolled).
             // Only rows whose middle is inside the column are asked whether they are hittable: XCTest fails the test,
             // rather than answering no, for a row clipped at the column's edge as the list glides ("activation point invalid").
-            let area = (try? column.snapshot())?.frame ?? .infinite
+            // The column's frame when it is the column (a phone's drawer can hand its identifier to a footer button).
+            let columnFrame = (try? column.snapshot())?.frame ?? .zero
+            let area = columnFrame.height > 200 ? columnFrame : app.windows.firstMatch.frame
             let clear = rows.allElementsBoundByIndex.first {
                 guard $0.exists, let frame = (try? $0.snapshot())?.frame, area.insetBy(dx: 0, dy: 8).contains(CGPoint(x: frame.midX, y: frame.midY))
                 else { return false }

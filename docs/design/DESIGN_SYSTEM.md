@@ -1295,6 +1295,13 @@ chat (#5033), where the panel only offers models and says plainly which one the 
   phones; Escape, the backdrop and Back keep things as they were. The model panel stays open under it (held below the
   backdrop) and closes once the switch is recorded. The pending pill names the engine and the target model with that
   model's own effort.
+- Android engine handoff (#5302, `docs/android/android.md` “Switching between Claude Code and Codex”): Glass
+  uses the existing model pill and panel. Entering the other engine asks with `JDialog`. While a switch waits, the
+  pill names the upcoming engine to assistive technology and keeps its mark in the compact composer. The panel offers
+  a direct cancellation above its search. In every style, the recorded handoff uses `JModelChangeDivider` and opens
+  the handoff context with the existing full-text reader. Older transcript runs join the same list as read-only rows
+  above the current run. Their pagination, full text and image requests retain the original conversation scope.
+
 - Panel (`web/src/ui/model-panel/`): opens above the pill, right edges aligned, 6 px gap, 8 px from the window's edges;
   300–460 px wide with a 428 px scrollable body, search on top and "Configure models" at the bottom.
   One shared column in Agent, handover, Assistant and New Agent pickers (#10249): Follow model configuration where
@@ -1885,6 +1892,10 @@ states visibly that the next message is saved as the answer; its existing cancel
 discussion. The original decision round travels with the answer. Only a delivered and recorded answer removes the
 pending card; neither navigation, an unrelated chat message, nor an answer to a different Agent question does.
 
+Expired assistant questions (#9731) keep one home on their question to-do. The shared `ask` payload puts them in **Needs you**, not **In progress**, without inventing an Agent or supervisor. On the web, the existing question card displays the original choices and descriptions inside that row: a single choice sends on one tap, while several questions or multiple selections keep the existing complete-form submission. Its answer goes through the to-do's late-answer route, not the expired interaction. **Later** defers only this browser's current question round; opening the to-do preserves its existing explicit close/drop controls. A failed answer keeps the original form usable. This adds no style, typography token or pending-request list.
+
+An irreversible deadline only reminds the owner: the question stays in **Needs you**. A reversible default reserves its answer while being delivered or recovered, so it never offers a second decision; a failed default returns that decision to the owner. A rejected inline answer retains the same selections for retry and never shows **Answer recorded**.
+
 Kinds: questions, plan approvals, tool approvals, secret entry, MCP forms, and waiting for a reply.
 
 - **Home**: the bottom of the session page, a stack of cards above the composer, which stays usable (iOS `PendingCards`;
@@ -1915,6 +1926,10 @@ Kinds: questions, plan approvals, tool approvals, secret entry, MCP forms, and w
   composer, under the Needs you / In progress entries and the route chip, on every client (#4883: on the web and Android
   they sat only in the closed Needs you tray, and an owner waited minutes on an approval no screen in the chat showed).
   Needs you still counts them, and its row for one closes the tray onto the card instead of drawing it a second time.
+  On the web, a card the conversation's own turn waits on (its own session's request, not one of a worker or side
+  session folded under it: `lib/turn-asks.ts`, #11794) is never folded: each stands open above the Needs you / In
+  progress capsules, all of them at once, and Needs you neither counts nor lists it again. The cards of sessions folded
+  under the conversation keep the stack and the tray as above. iOS and Android keep the stack for both until they follow.
   The stack holds the conversation's own cards alone, as one slot on the web: its first card with "2 / 6" (where it stands in the run), the next taking its place when it is answered, and what was just answered one line over it that goes 3 seconds after the last answer (details with the interaction cards in `docs/web/web.md`).
   What the conversation's tasks ask is a card of its own above the entries (iOS `TaskQuestions`, #4339 C10): the oldest
   question of their Agents, under its task's name with the ask mark in the needs-you tone and, at the end of that line,

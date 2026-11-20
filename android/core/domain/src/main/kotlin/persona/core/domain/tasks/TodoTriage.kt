@@ -185,7 +185,9 @@ fun Todo.triage(
         return at(TriageSection.Done, TriageRule.FailedStart)
     }
     if (status == TriageStatus.NeedsYou || status == TriageStatus.Interrupted) return at(TriageSection.Waiting, TriageRule.AgentAsks)
-    if (!decisionDismissed() && !isDone && (review == "needs_user" || ask?.outcome == "decide" || ask?.outcome == "cannot")) return at(TriageSection.Waiting, TriageRule.OwnerDecides)
+    if (!decisionDismissed() && !isDone && (hold?.unblock == HoldUnblock.User || review == "needs_user" || ask?.outcome == "decide" || ask?.outcome == "cannot")) {
+        return at(TriageSection.Waiting, TriageRule.OwnerDecides)
+    }
     if (status == TriageStatus.Working || status == TriageStatus.Waiting) return at(TriageSection.Working, TriageRule.AgentRunning)
     if (isDone) return at(if (kind == "concern" && fresh(ms(doneAt))) TriageSection.JustDone else TriageSection.Done, TriageRule.Closed)
     if (!concern && acceptanceStands) return at(TriageSection.Done, TriageRule.Accepted)

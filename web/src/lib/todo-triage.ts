@@ -65,6 +65,7 @@ export type TriageRule =
   | "superseded"
   | "agent_asks"
   | "owner_decides"
+  | "delivery_ok"
   | "agent_running"
   | "parked"
   | "closed"
@@ -128,7 +129,7 @@ function shelvable(todo: Todo, now: number): boolean {
  *  1. failed_start    the task's agent never started                    → Waiting on you (retry or remove), Done after 48 h;
  *     superseded      … and a related to-do (its row) really finished   → Done immediately (#3713)
  *  2. agent_asks      an agent asks (question, approval) or was cut off → Waiting on you
- *  3. owner_decides   review says needs_user, or a decision / "cannot" ask → Waiting on you
+ *  3. owner_decides   review says needs_user, a decision / "cannot" ask, or delivery_ok → Waiting on you
  *  4. agent_running   an agent is working or starting                   → Working
  *  5. closed          done_at set                                       → Done immediately
  *  5a. parked         an explicit hold                                   → Parked until the hub changes its state
@@ -168,6 +169,7 @@ export function triage(todo: Todo, lookup: SessionLookup | undefined, now: numbe
   if (status === "needs_you" || status === "interrupted") return at("waiting", "agent_asks");
   // a decision the owner chose Don't handle on no longer waits on them (decisionDismissed)
   if (!decisionDismissed(todo) && waitsForOwner(todo)) return at("waiting", "owner_decides");
+  if (heldDelivery(todo)?.unblock === "user") return at("waiting", "delivery_ok");
   // rule 8's signals, read here so rule 9 yields to them: a turn or review still awaiting acceptance stays Just finished
   const finished = status === "unread" || review === "pending_review" || (ask && !ask.outcome) || ask?.outcome === "done";
   const acceptanceRequired = review === "pending_review" || Boolean(todo.supervision?.supervisor);
@@ -246,7 +248,8 @@ export type OwnerWait = "failed_start" | "agent_asks" | "owner_decides" | "deliv
  */
 export function waitsOnOwner(todo: Todo, t: Triage): OwnerWait | null {
   if (!countsAsOpen(todo, t)) return null;
-  if (t.section === "waiting" && (t.rule === "failed_start" || t.rule === "agent_asks" || t.rule === "owner_decides")) return t.rule;
+  const rule = t.rule;
+  if (t.section === "waiting" && (rule === "failed_start" || rule === "agent_asks" || rule === "owner_decides" || rule === "delivery_ok")) return rule;
   return heldDelivery(todo)?.unblock === "user" ? "delivery_ok" : null;
 }
 

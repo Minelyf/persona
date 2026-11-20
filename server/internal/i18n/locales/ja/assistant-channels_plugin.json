@@ -1,5 +1,6 @@
 {
   "extra_images": "その他の画像",
+  "image_too_large": "縮小できなかった大きすぎる画像",
   "unnamed": "名前なし",
   "unsupported_file": "ファイル「{name}」",
   "not_sent": "送信できませんでした：{error}",

@@ -222,12 +222,12 @@ PY
     --record "$OUTPUT/simulator-readiness-context.json" --udid "$SIM" --bundle-id "$CI_BUNDLE_ID"
   ci_run 'Verify hosted iOS test readiness' 900 bash -c '
     set -euo pipefail
-    checker="$1"; bundle="$2"; log="$3"; watch="$4"; udid="$5"; shift 5
-    watch_log="$OUTPUT/diagnostics/live-readiness"
-    python3 "$CI_ROOT/scripts/ci/apple_readiness_watch.py" \
-      --udid "$udid" --bundle-id "$CI_BUNDLE_ID" \
-      --app "$OUTPUT/ios-tests/Build/Products/Debug-iphonesimulator/Persona.app/Persona" \
-      --test-bundle "$OUTPUT/ios-tests/Build/Products/Debug-iphonesimulator/Persona.app/PlugIns/PersonaTests.xctest/PersonaTests" \
+    checker="$1"; bundle="$2"; log="$3"; watch_log="$4"; udid="$5"; ci_root="$6"; bundle_id="$7"; output="$8"; shift 8
+    mkdir -p "$watch_log"
+    python3 "$ci_root/scripts/ci/apple_readiness_watch.py" \
+      --udid "$udid" --bundle-id "$bundle_id" --scope-root "$output" \
+      --app "$output/ios-tests/Build/Products/Debug-iphonesimulator/Persona.app/Persona" \
+      --test-bundle "$output/ios-tests/Build/Products/Debug-iphonesimulator/Persona.app/PlugIns/PersonaTests.xctest/PersonaTests" \
       --output "$watch_log" --seconds 900 &
     watcher=$!
     stop_watcher() {
@@ -248,7 +248,7 @@ PY
       "$@" -only-testing:PersonaTests/TypeScaleTests -resultBundlePath "$bundle" test-without-building
       python3 "$checker" "$bundle" TypeScaleTests
     } 2>&1 | tee "$log"
-  ' -- "$CI_ROOT/scripts/ci/apple_result.py" "$OUTPUT/ios-readiness.xcresult" "$OUTPUT/simulator-readiness.log" "$OUTPUT/simulator-readiness-watch" "$SIM" "${IOS_TESTS[@]}"
+  ' -- "$CI_ROOT/scripts/ci/apple_result.py" "$OUTPUT/ios-readiness.xcresult" "$OUTPUT/simulator-readiness.log" "$OUTPUT/diagnostics/live-readiness" "$SIM" "$CI_ROOT" "$CI_BUNDLE_ID" "$OUTPUT" "${IOS_TESTS[@]}"
 
   # The real EventKit round-trip uses only this disposable simulator's store.
   # TCC grants can precede installation of the synthetic CI app.

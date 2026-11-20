@@ -78,7 +78,7 @@ def product_evidence(app, test_bundle, destination):
 
 
 def observe(udid, bundle, app, test_bundle, destination, seconds, runner=subprocess.run,
-            monotonic=time.monotonic, sleep=time.sleep):
+            monotonic=time.monotonic, sleep=time.sleep, scope_root=None):
     launch.identity(udid, bundle)
     if app.name != "Persona" or app.parent.name != "Persona.app" or test_bundle.name != "PersonaTests":
         raise ValueError("unexpected CI product identity")
@@ -111,8 +111,7 @@ def observe(udid, bundle, app, test_bundle, destination, seconds, runner=subproc
         bounded_file(["xcrun", "simctl", "list", "runtimes", "-j"],
                      destination / "runtimes-final.json", timeout=10, limit=1024 * 1024)
         now = datetime.now(timezone.utc)
-        launch.collect(destination.parent, destination, now=now,
-                     scope_root=destination.parent.parent)
+        launch.collect(destination.parent, destination, now=now, scope_root=scope_root)
         (destination / "observer.status.txt").write_text(
             ("xcodebuild-finished" if stopped else "readiness-deadline") +
             "; observation only; no launch cause established\n")
@@ -129,13 +128,15 @@ def main():
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--test-bundle", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--scope-root", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=launch.READINESS_SECONDS)
     args = parser.parse_args()
     if not 0 < args.seconds <= launch.READINESS_SECONDS:
         parser.error("observation cannot exceed the readiness deadline")
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, interrupted)
-    observe(args.udid, args.bundle_id, args.app, args.test_bundle, args.output, args.seconds)
+    observe(args.udid, args.bundle_id, args.app, args.test_bundle, args.output, args.seconds,
+            scope_root=args.scope_root)
 
 
 if __name__ == "__main__":

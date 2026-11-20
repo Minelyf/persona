@@ -55,7 +55,8 @@ class ObserverTests(unittest.TestCase):
                 mock.patch.object(watch, "bounded_file", return_value=0) as bounded, \
                 mock.patch.object(watch.launch, "collect") as collect:
             watch.observe(UDID, watch.launch.BUNDLE, self.app, self.test_bundle,
-                          self.destination, 140, monotonic=monotonic, sleep=lambda _: None)
+                          self.destination, 140, monotonic=monotonic, sleep=lambda _: None,
+                          scope_root=self.output)
         product.assert_called_once()
         self.assertEqual([call.args[2] for call in sample.call_args_list], ["host-first", "host-final"])
         bounded.assert_called_once()
@@ -82,7 +83,8 @@ class ObserverTests(unittest.TestCase):
                 mock.patch.object(watch, "bounded_file", return_value=0), \
                 mock.patch.object(watch.launch, "collect"):
             watch.observe(UDID, watch.launch.BUNDLE, self.app, self.test_bundle,
-                          self.destination, 140, monotonic=monotonic, sleep=lambda _: None)
+                          self.destination, 140, monotonic=monotonic, sleep=lambda _: None,
+                          scope_root=self.output)
         self.assertEqual([call.args[2] for call in sample.call_args_list],
                          ["host-first", "host-after-30s", "host-final"])
 

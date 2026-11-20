@@ -13,6 +13,9 @@ let LoadedUnconnected: ComponentType<{ accounts: UsageAccount[]; onChange: (next
 const percent = (p: number) => Math.min(100, Math.max(0, p));
 const shown = (p: number) => `${Math.round(p)}%`;
 const fill = (p: number) => (isWarn(p) ? "bg-orange" : "bg-accent");
+// The strip's row text: one place for the size, so a new kind of row does not add another hard-coded one.
+const ROW_NAME = "min-w-0 flex-1 truncate text-[11.5px] text-ink-3";
+const ROW_VALUE = "shrink-0 text-[11.5px] tabular-nums";
 
 /** A bar: the track, the used part (caution colour from 80%) and, with `expected`, a tick where an even pace would be. */
 export function Meter({ used, expected, label, tall }: { used: number; expected?: number; label: string; tall?: boolean }) {
@@ -67,8 +70,8 @@ export function UsageBars({ accounts, unconnected = EMPTY_UNCONNECTED, now = Dat
           return (
             <span key={a.id} className={cx("flex flex-col gap-1", a.stale && "opacity-60")} title={title || undefined}>
               <span className="flex items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">{a.name}</span>
-                <span className={cx("shrink-0 text-[11.5px] tabular-nums", isWarn(used) ? "text-orange" : "text-ink-2")}>{shown(used)}</span>
+                <span className={ROW_NAME}>{a.name}</span>
+                <span className={cx(ROW_VALUE, isWarn(used) ? "text-orange" : "text-ink-2")}>{shown(used)}</span>
               </span>
               <Meter used={used} label={tr("usage.used_label", { name: a.name, percent: shown(used) })} />
             </span>
@@ -94,8 +97,8 @@ function BalanceRow({ a }: { a: UsageAccount }) {
   // Why a balance is missing or old is the popover's detail (progressive disclosure); the strip only fades a stale one.
   return (
     <span className={cx("flex items-baseline gap-2", a.stale && "opacity-60")}>
-      <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">{a.name}</span>
-      <span className={cx("shrink-0 text-[11.5px] tabular-nums", !a.balance || Number(a.balance.amount) === 0 ? "text-orange" : "text-ink-2")}>
+      <span className={ROW_NAME}>{a.name}</span>
+      <span className={cx(ROW_VALUE, !a.balance || Number(a.balance.amount) === 0 ? "text-orange" : "text-ink-2")}>
         {a.balance ? `${a.balance.currency} ${a.balance.amount}`.trim() : "—"}
       </span>
     </span>

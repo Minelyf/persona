@@ -131,11 +131,11 @@ function AccountSection({ a, now }: { a: UsageAccount; now: number }) {
       </header>
       {a.balance && (
         <div data-usage-balance className="flex items-baseline justify-between gap-2 rounded-control bg-inset px-2.5 py-2">
-          <span className="text-[11px] text-ink-3">{tr("usage.balance_label")}</span>
-          <span className={cx("text-[15px] font-medium tabular-nums", balanceEmpty(a.balance) ? "text-orange" : "text-ink")}>{balanceText(a.balance)}</span>
+          <span className="text-xs text-ink-3">{tr("usage.balance_label")}</span>
+          <span className={cx("text-sm font-medium tabular-nums", balanceEmpty(a.balance) ? "text-orange" : "text-ink")}>{balanceText(a.balance)}</span>
         </div>
       )}
-      {!a.balance && isBalanceAccount(a) && <div data-usage-balance-unavailable className="text-[12.5px] text-orange">{tr("usage.balance_unavailable")}</div>}
+      {!a.balance && isBalanceAccount(a) && <div data-usage-balance-unavailable className="text-xs text-orange">{tr("usage.balance_unavailable")}</div>}
       {a.windows.map((w) => (
         <WindowRow key={windowKey(w)} name={a.name} w={w} now={now} />
       ))}

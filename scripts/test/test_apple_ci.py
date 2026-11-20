@@ -79,6 +79,36 @@ class AppleCIPreparationTests(unittest.TestCase):
             script.index("Unsigned iOS and embedded watch/extensions build"),
         )
 
+    def test_native_ssh_tests_run_before_the_app_and_fail_the_lane_on_error(self):
+        script = SCRIPT.read_text()
+        packages = script.split('if [ "$LANE" = all ] || [ "$LANE" = ios ] || [ "$LANE" = packages ]; then\n', 1)[1].split('\nfi', 1)[0]
+        commands = [line.strip() for line in packages.splitlines() if "ci_run 'PersonaSSH " in line]
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        self.assertLess(script.index(command), script.index('Unsigned iOS and embedded watch/extensions build'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            xcrun = root / 'xcrun'
+            xcrun.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$CALL_LOG"\nexit "$SSH_STATUS"\n')
+            xcrun.chmod(0o755)
+            log = root / 'commands.log'
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       SOURCE=str(root / 'source snapshot'), SPM=str(root / 'spm cache'), CALL_LOG=str(log))
+            shell = 'source scripts/ci/common.sh\n' + command + '\nprintf "ssh-lane-continued\\n"\n'
+            for status in (0, 42):
+                with self.subTest(status=status):
+                    env['SSH_STATUS'] = str(status)
+                    result = subprocess.run(['bash', '-c', shell], cwd=ROOT, env=env,
+                                            text=True, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    # The complete native suite runs from the disposable snapshot, with no filters or skips.
+                    self.assertEqual(log.read_text().splitlines(), [
+                        'swift', 'test', '--package-path', env['SOURCE'] + '/apple/Packages/PersonaSSH',
+                        '--scratch-path', env['SPM'] + '/PersonaSSH',
+                    ])
+                    self.assertEqual('ssh-lane-continued' in result.stdout, status == 0)
+                    self.assertIn('PASS' if status == 0 else 'FAIL', result.stdout)
+
     def test_existing_integration_exclusions_use_exact_swift_testing_selectors(self):
         script = SCRIPT.read_text()
         block = script.split('IOS_EXCLUSIONS=(', 1)[1].split('\n  )', 1)[0]

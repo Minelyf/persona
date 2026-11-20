@@ -193,8 +193,9 @@ class HubSessionFiles internal constructor(
 
     override suspend fun readLogTail(machineId: String, cwd: String, path: String, manager: String?): SessionLogTail {
         require(machineId.isNotBlank() && cwd.isNotBlank() && path.isNotBlank())
-        val query = listOf("path" to path) + listOfNotNull(manager?.takeIf(String::isNotBlank)?.let { ManagerQuery to it })
-        val url = apiUrl(machineId, "file/download", cwd, *query.toTypedArray())
+        // An empty pin also overrides the caller's ambient manager. The HTTP client omits it on the wire.
+        val owner = manager?.takeUnless(String::isBlank).orEmpty()
+        val url = apiUrl(machineId, "file/download", cwd, "path" to path, ManagerQuery to owner)
         return range(url, mapOf("Range" to "bytes=-$LOG_TAIL_BYTES", "Cache-Control" to "no-store"))
     }
 

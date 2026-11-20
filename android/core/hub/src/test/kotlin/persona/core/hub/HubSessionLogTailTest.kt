@@ -5,6 +5,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -18,6 +19,8 @@ import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 import persona.core.contracts.api.ConnectionState
+import persona.core.contracts.api.ManagerPins
+import persona.core.contracts.api.RequestManager
 import persona.core.contracts.api.SessionLogTail
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
@@ -42,6 +45,36 @@ class HubSessionLogTailTest {
             response(path, 206, "bytes 0-8/9", bytes).use(::readSessionLogTail)
         })
         assertEquals(SessionLogTail("finished\n", false), hub.readLogTail("box/two", "/workspace/a & b", "/task logs/job #1.txt", "own-manager"))
+    }
+
+    @Test fun defaultAndNamedLogOwnersOverrideTheAmbientManagerOnTheWire(): Unit = runBlocking {
+        val observed = java.util.concurrent.LinkedBlockingQueue<Pair<String?, String?>>()
+        LoopbackHub(api = { request ->
+            assertEquals("Bearer fixture-device", request.getHeader("Authorization"))
+            assertEquals("bytes=-65536", request.getHeader("Range"))
+            observed.add(request.requestUrl?.queryParameter(ManagerQuery) to request.getHeader(ManagerHeader))
+            MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes 0-1/2").setBody("ok")
+        }).use { hub ->
+            val config = HubConnectionConfig(hub.hubId, null, "fixture-device", listOf(hub.endpoint("lan")), "fixture")
+            OkHttpHubConnection(config, HubNetwork("loopback")).use { connection ->
+                withTimeout(5_000) { connection.currentHello.first { it != null } }
+                val files = HubSessionFiles(connection)
+                val page = ManagerPins.of(listOf(listOf("machines")), "ambient-page")!!
+                withContext(page) {
+                    for (owner in listOf(null, "", " ", "owner")) {
+                        assertEquals(SessionLogTail("ok", false), files.readLogTail("box", "/work", "/log.txt", owner))
+                        assertEquals(owner?.takeUnless(String::isBlank) to null, observed.remove())
+                    }
+                    withContext(RequestManager("ambient-item")) {
+                        assertEquals(SessionLogTail("ok", false), files.readLogTail("box", "/work", "/log.txt", null))
+                        assertEquals(null to null, observed.remove())
+                        assertEquals(SessionLogTail("ok", false), files.readLogTail("box", "/work", "/log.txt", "owner"))
+                        assertEquals("owner" to null, observed.remove())
+                    }
+                }
+                assertTrue(observed.isEmpty())
+            }
+        }
     }
 
     @Test fun aSuffixDropsTheLeadingPartialUtf8Line() {

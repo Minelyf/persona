@@ -87,7 +87,7 @@ internal fun ChatPageOverlays(
         request, session, backgroundActions, backgroundConnection, "sessions_lookup" in LocalHubFeatures.current,
         backgroundFiles, onStopLoop = if (readOnly || !canSend) null else ({ send(ChatActivity.STOP_LOOP) }),
         onOpenFile = onOpenPath?.let { open -> { path -> activitySheet.value = null; open(path, null) } },
-        onOpenAgent = onOpenSession?.let { open -> { target -> activitySheet.value = null; open(target) } },
+        onOpenAgent = onOpenSession?.takeUnless { readOnly }?.let { open -> { target -> activitySheet.value = null; open(target) } },
         onDismiss = { activitySheet.value = null },
     )
     if (statusSheet.value) ChatStatusSheet(status, session, messages, deliveryActions.busyIds,

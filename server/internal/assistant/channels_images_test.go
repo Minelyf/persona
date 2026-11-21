@@ -277,3 +277,75 @@ func TestChannelAnswerLeavesIndentedCodeAlone(t *testing.T) {
 		t.Errorf("fetched %v", f)
 	}
 }
+
+// TestChannelAnswerSendsPicturesUnderListItems: a picture indented under a list item, after a blank line, is a
+// paragraph of that item, not code (CommonMark: an item's code needs four columns past its content), so it is sent;
+// four columns past the item's content it is code and stays text.
+func TestChannelAnswerSendsPicturesUnderListItems(t *testing.T) {
+	s, sends, fetched := picturesRig(t, true)
+	answer := strings.Join([]string{
+		"Steps:",
+		"",
+		"10. Open the page",
+		"",
+		"    ![shot](https://pics.example/list.png)",
+		"",
+		"- Then the menu",
+		"",
+		"  ![menu](https://pics.example/bullet.png)",
+		"",
+		"      ![code](https://pics.example/item-code.png)",
+		"",
+		"  1. A nested step",
+		"",
+		"     ![nested](https://pics.example/nested.png)",
+		"",
+		"  ```",
+		"  ![fenced](https://pics.example/item-fence.png)",
+		"  ```",
+		"",
+		"Done.",
+		"",
+		"    ![after](https://pics.example/after.png)",
+	}, "\n")
+	if err := s.channelSend(context.Background(), "examplechat", "run-1", answer, channel.OutAnswer, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := sends()
+	if len(got) != 1 || len(images(t, got[0])) != 3 {
+		t.Fatalf("sent %v", got)
+	}
+	text := got[0]["text"].(string)
+	for _, want := range []string{"      ![code](https://pics.example/item-code.png)", "  ![fenced](https://pics.example/item-fence.png)",
+		"    ![after](https://pics.example/after.png)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lost %q:\n%s", want, text)
+		}
+	}
+	for _, gone := range []string{"list.png", "bullet.png", "nested.png"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("text still has %s:\n%s", gone, text)
+		}
+	}
+	if f := fetched(); len(f) != 3 {
+		t.Errorf("fetched %v", f)
+	}
+}
+
+func TestListItemContentColumn(t *testing.T) {
+	for _, c := range []struct {
+		line    string
+		content int
+		ok      bool
+	}{
+		{"- a", 2, true}, {"* a", 2, true}, {"+ a", 2, true}, {"1. a", 3, true}, {"10) a", 4, true},
+		{"  - a", 4, true}, {"-   a", 4, true}, {"-      a", 2, true}, {"-", 2, true}, {"1.", 3, true},
+		{"-a", 0, false}, {"1.a", 0, false}, {"1234567890. a", 0, false}, {"text", 0, false},
+		{"- - -", 0, false}, {"***", 0, false}, {"![x](https://pics.example/x.png)", 0, false},
+	} {
+		content, ok := listItem(c.line)
+		if ok != c.ok || (ok && content != c.content) {
+			t.Errorf("listItem(%q) = %d, %v; want %d, %v", c.line, content, ok, c.content, c.ok)
+		}
+	}
+}

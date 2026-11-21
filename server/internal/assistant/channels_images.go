@@ -80,7 +80,7 @@ func (s *Service) channelImages(ctx context.Context, id, text string) (string, [
 			items = append(items, content)
 			continue
 		}
-		if mark := fenceOf(trimmed); mark != "" {
+		if mark := fenceOf(trimmed); mark != "" && indent < base+4 { // further in, it continues the paragraph
 			fence, para = mark, false
 			continue
 		}

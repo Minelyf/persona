@@ -349,3 +349,20 @@ func TestListItemContentColumn(t *testing.T) {
 		}
 	}
 }
+
+// TestChannelAnswerFenceNeedsLessThanFourColumns: three backticks four columns in, continuing a paragraph, are text of
+// that paragraph (CommonMark), not a fence, so the picture after them is still sent.
+func TestChannelAnswerFenceNeedsLessThanFourColumns(t *testing.T) {
+	s, sends, _ := picturesRig(t, true)
+	answer := "Run this:\n    ```\n\n![shot](https://pics.example/after-fence.png)"
+	if err := s.channelSend(context.Background(), "examplechat", "run-1", answer, channel.OutAnswer, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := sends()
+	if len(got) != 1 || len(images(t, got[0])) != 1 {
+		t.Fatalf("sent %v", got)
+	}
+	if text := got[0]["text"].(string); strings.Contains(text, "after-fence.png") {
+		t.Errorf("text:\n%s", text)
+	}
+}

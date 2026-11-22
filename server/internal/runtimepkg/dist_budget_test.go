@@ -13,9 +13,10 @@ import (
 // the conversation's history (#12014) adds 738 B (199,188 B ceiling). Embedding persona-opencode-runtime
 // (opencode/package.json, index.js, companion.mjs, lib/*.js including #12504/#12545; shared runtime-sdk blob reused)
 // measured 248,704 B on 2026-11-21. Session-bound A2A tool bridges bring the generated total to about 251.3 kB.
+// Normalizing local file:// Markdown links in Antigravity replies (#12577) brings the generated total to 253,448 B.
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 252_000
+	const budget = 254_000
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

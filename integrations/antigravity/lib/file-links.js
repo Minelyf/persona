@@ -141,7 +141,7 @@ export function cleanAssistantText(raw) {
     if (fence) {
       out[i] = line
       const rest = line.replace(/^(?:[ \t]*>[ \t]?)+/, '').trim()
-      if (rest.length >= fence.len && rest[0] === fence.ch && /^(`+|~+)$/.test(rest)) fence = null
+      if (rest.length >= fence.len && (fence.ch === '`' ? /^`+$/.test(rest) : /^~+$/.test(rest))) fence = null
       blank = false
       continue
     }
